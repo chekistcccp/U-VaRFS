@@ -70,7 +70,9 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
         rows = [var_sum[k][l] / max(var_count[k], 1) for k in PERTURBATIONS]
         var_vectors[l] = torch.stack(rows, dim=0).to(device)
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
+    print(f"[fit] ASLS start: layers={len(pooled)} pooled_samples={next(iter(pooled.values())).shape[0]}", flush=True)
     asls = fit_asls(pooled, layer_var, cfg["asls"])
+    print(f"[fit] ASLS done: selected_layers={asls[\'selected_layers\']} geometry_error={asls[\'geometry_error\']:.4f}", flush=True)
     save_json(asls, dataset_out / "asls.json")
     return patches, var_vectors, asls
 
@@ -86,7 +88,8 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
     def fit_uv(name, layers):
         x = torch.cat([patches[l] for l in layers], dim=-1)
         v = torch.cat([variabilities[l] for l in layers], dim=1)
-        r = fit_uvarfs(x, v, cfg["uvarfs"])
+        print(f"[fit] U-VaRFS {name}: layers={layers} shape={tuple(x.shape)}", flush=True)
+        r = fit_uvarfs(x, v, cfg["uvarfs"], label=f"uvarfs:{name}")
         save_json({"layers": layers, "lambda": r["lambda"], "active": r["active"].tolist(),
                    "scales": r["scales"].tolist(), "geometry_error": r["geometry_error"]},
                   dataset_out / f"uvarfs_{name}.json")
