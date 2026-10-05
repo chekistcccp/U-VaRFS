@@ -1,104 +1,235 @@
-# `data/` 原始 BMAD 数据放置说明
+# BMAD 原始压缩包固定放置位置
 
-本目录只放你自行下载的**原始数据/原始压缩包**。`run.sh` 不下载 BMAD 数据，也不会修改原文件。
-预处理输出统一写到 `data/processed/BMAD/`；压缩包临时解压到 `data/_extracted/`。
-
-文件夹名不要求完全一致，预处理器会递归识别。推荐布局如下。
-
-## 1. Brain MRI — BraTS2021
+请把你自行下载的 **全部 BMAD 原始压缩包** 直接放到：
 
 ```text
-data/brats2021/
-  BraTS2021_00000/
-    BraTS2021_00000_flair.nii.gz
-    BraTS2021_00000_seg.nii.gz
-  ...
+U-VaRFS/
+└── data/
+    └── archives/
+        ├── <BraTS2021 压缩包>
+        ├── <BTCV/ATLAS 压缩包>
+        ├── <LiTS 压缩包>
+        ├── <RESC 压缩包>
+        ├── <OCT2017 压缩包>
+        ├── <RSNA 压缩包>
+        └── <Camelyon16 压缩包>
 ```
 
-只需要 FLAIR 与 segmentation。代码复现 BMAD 的 60–99 轴向切片规则；正常训练/正常评估切片要求 segmentation 为空，异常评估按 BMAD 步长抽样并生成像素 mask。仓库内 `metadata/brats_splits.json` 保存 BMAD 官方脚本公开的 train/valid-normal/test-normal ID；异常 ID 用剩余患者排序后确定性划分，避免原官方脚本 `set()` 导致的不可复现顺序。
+不需要手工解压，不要求改名，也不要求事先整理内部目录。
 
-## 2. Liver CT — BTCV/ATLAS + LiTS
-
-BTCV/ATLAS：
+支持的压缩格式：
 
 ```text
-data/atlas/Training/img/img0001.nii.gz
- data/atlas/Training/label/label0001.nii.gz
+.zip
+.tar
+.tar.gz
+.tgz
+.tar.xz
+.txz
+.7z
 ```
 
-LiTS：
+> 注意：`.nii.gz` 是医学影像文件，不会被当成普通压缩包继续解压。
+
+## 自动处理流程
+
+运行：
+
+```bash
+bash run.sh
+```
+
+代码会自动执行：
 
 ```text
-data/lits/volume-0.nii(.gz)
-data/lits/segmentation-0.nii(.gz)
+data/archives/
+      ↓
+扫描全部压缩包
+      ↓
+自动解压
+      ↓
+若压缩包内部仍有压缩包，则继续递归解压
+      ↓
+data/_extracted/
+      ↓
+递归识别 BraTS / BTCV / LiTS / RESC / OCT2017 / RSNA / Camelyon16
+      ↓
+BMAD 风格预处理
+      ↓
+data/processed/BMAD/
 ```
 
-BTCV 的 liver label=6 用于生成 normal training slices；LiTS 中 label>0 为 liver、label=2 为 tumor。代码按 BMAD 原处理方式进行肝区 mask、翻转、直方图均衡；LiTS 确定性排序后取 93 normal + 73 abnormal 为 validation，其余为 test。
+原始压缩包不会被修改或删除。
 
-## 3. RESC OCT
+## 解压缓存
 
-支持 P-Net 原始发布结构：
+解压结果保存到：
 
 ```text
-data/RESC/
-  train/images/<case>/*.png
-  test/images/<case>/*.png           # abnormal
-  test/lesion_mask/<case>/*.png      # abnormal masks
-  test/normal_images/<case>/*.png    # normal
+data/_extracted/
 ```
 
-全部 train/images 作为正常训练库。原 test 集确定性抽取 65 normal + 50 abnormal（共 115）作为 validation，其余作为 test，因此完整原始 RESC 时得到 BMAD 规模 4297/115/1805。
+每个压缩包会根据：
 
-## 4. OCT2017 / Kermany
+- 原始路径
+- 文件大小
+- 修改时间
+
+生成缓存指纹。压缩包没有变化时，重复运行不会重新解压。
+
+如果你替换了压缩包，新文件会得到新的缓存目录。
+
+## 预处理输出
+
+统一输出：
 
 ```text
-data/OCT2017/
-  train/{NORMAL,CNV,DME,DRUSEN}/*
-  test/{NORMAL,CNV,DME,DRUSEN}/*
+data/processed/BMAD/
+├── Brain/
+├── liver/
+├── RESC/
+├── OCT2017/
+├── xray/
+├── camelyon16/
+└── preprocess_summary.json
 ```
 
-只用 NORMAL 训练。标准 1000 张 test 中，validation 取 8 NORMAL + 每个异常类别各 8 张；剩余 242 NORMAL + 726 abnormal 为 test，对应 BMAD 的 32/968。
-
-## 5. Chest X-ray — RSNA Pneumonia Detection Challenge
+每个数据集还会生成：
 
 ```text
-data/rsna/
-  stage_2_train_images/*.dcm
-  stage_2_detailed_class_info.csv
+preprocess_manifest.json
 ```
 
-DICOM 自动转 8-bit PNG。Normal 排序后前 8000 张作为 one-class training；剩余样本按类别比例确定性分出 1490 张 validation，其余 test。该数据集没有像素级异常 mask。
+记录识别到的原始来源、划分规则和样本数量。
 
-## 6. Histopathology — Camelyon16
+## 六类原始数据的自动识别规则
 
-把官方 `.tif/.tiff` WSI 放在 `data/` 下任意子目录即可，例如：
+### 1. Brain MRI — BraTS2021
+
+代码递归寻找：
 
 ```text
-data/camelyon16/training/normal/*.tif
-data/camelyon16/training/tumor/*.tif
-data/camelyon16/testing/images/*.tif
+*_flair.nii.gz
+*_seg.nii.gz
 ```
 
-仓库 `metadata/camelyon16/*.txt` 保存 BMAD 官方公开的 patch 坐标。预处理器按这些坐标以 level 0 裁 256×256 patch，生成 train/valid/test good/Ungood。需要 Python `openslide-python` 以及系统 OpenSlide 动态库。
+自动执行：
 
-## 压缩包
+- FLAIR 提取；
+- 轴向 slice 60–99；
+- 正常训练 slice 仅保留 segmentation 为空者；
+- 异常 slice 生成像素级 mask；
+- 使用仓库内 `metadata/brats_splits.json` 的 BMAD 划分信息。
 
-`data/` 中的 `.zip/.tar/.tar.gz/.tgz/.7z` 会自动解压到 `data/_extracted/`，不会覆盖或删除原压缩包。若已经自行解压，直接放目录即可。
+### 2. Liver CT — BTCV/ATLAS + LiTS
 
-## 只测试预处理
+BTCV/ATLAS 自动寻找：
+
+```text
+imgXXXX.nii(.gz)
+labelXXXX.nii(.gz)
+```
+
+LiTS 自动寻找：
+
+```text
+volume-*.nii(.gz)
+segmentation-*.nii(.gz)
+```
+
+自动执行肝区 masking、翻转、直方图均衡、肿瘤 mask 生成和确定性 validation/test 划分。
+
+### 3. RESC
+
+代码递归寻找原始 P-Net 风格目录：
+
+```text
+train/images/
+test/images/
+test/lesion_mask/
+test/normal_images/
+```
+
+自动重建 BMAD 的 train/valid/test。
+
+### 4. OCT2017
+
+代码递归寻找：
+
+```text
+train/NORMAL/
+train/CNV/
+train/DME/
+train/DRUSEN/
+test/NORMAL/
+test/CNV/
+test/DME/
+test/DRUSEN/
+```
+
+仅 NORMAL 用于 one-class training。
+
+### 5. RSNA Chest X-ray
+
+代码递归寻找：
+
+```text
+stage_2_train_images/*.dcm
+stage_2_detailed_class_info.csv
+```
+
+自动将 DICOM 转为 PNG，并构造 BMAD one-class 训练和测试划分。
+
+### 6. Camelyon16
+
+代码递归寻找所有：
+
+```text
+*.tif
+*.tiff
+```
+
+并使用仓库：
+
+```text
+metadata/camelyon16/*.txt
+```
+
+中的 BMAD 官方 patch 坐标，自动裁取 256×256 patch。
+
+Camelyon16 需要：
+
+- Python 包 `openslide-python`
+- 系统 OpenSlide 动态库
+
+## 首次建议：只跑预处理
 
 ```bash
 PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
 ```
 
-强制重新预处理：
+如果成功，检查：
+
+```text
+data/processed/BMAD/preprocess_summary.json
+```
+
+再运行全部实验：
+
+```bash
+bash run.sh
+```
+
+## 强制重新预处理
 
 ```bash
 FORCE_PREPROCESS=1 PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
 ```
 
-只处理部分数据：
+## 只处理部分数据
 
 ```bash
 DATASETS=brain,liver PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
 ```
+
+如果压缩包不存在、损坏，或无法从解压结果中识别所需原始结构，预处理阶段会直接报错并停止，不会继续运行后续实验。
