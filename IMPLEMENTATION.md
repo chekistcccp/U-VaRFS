@@ -8,18 +8,18 @@
 
 1. 创建并激活实验环境；
 2. 按 `requirements.txt` 安装依赖；
-3. 将 BMAD 对应的**原始数据或原始压缩包**放到仓库根目录 `data/`。
+3. 将 BMAD 对应的**原始压缩包**统一放到固定目录 `data/archives/`。无需手工解压或改名。
 
 代码负责：
 
 1. 检查环境；
 2. 从 ModelScope 下载 DINOv3 权重到 `models/dinov3_vitsplus/`；
-3. 自动解压和识别 `data/` 中的原始 BMAD 来源数据；
+3. 仅扫描 `data/archives/` 中的原始压缩包，自动解压到 `data/_extracted/`，并递归处理压缩包中的压缩包；
 4. 将它们预处理到 `data/processed/BMAD/`；
 5. 运行 DINOv3 + ASLS + U-VaRFS 及全部 baseline；
 6. 计算 image/pixel 指标、AUPRO、压缩率、显存和耗时并汇总 CSV。
 
-原始数据的详细期望结构见 [`data/README.md`](data/README.md)。
+固定压缩包位置、支持格式和自动识别规则见 [`data/README.md`](data/README.md)。
 
 ## 一键运行
 
@@ -49,7 +49,7 @@ bash run.sh
 
 ```text
 data/
-├── <你下载的原始文件/压缩包>
+├── archives/                    # 你只需要把所有原始压缩包放这里
 ├── _extracted/                 # 自动解压缓存
 └── processed/
     └── BMAD/
@@ -144,3 +144,22 @@ results/all_metrics.csv
 results/summary_metrics.csv
 results/layer_selection.csv
 ```
+
+
+## 固定压缩包入口
+
+从当前版本开始，原始 BMAD 数据入口固定为：
+
+```text
+data/archives/
+```
+
+`run.sh` 和预处理器不会再扫描 `data/` 中的其他普通目录作为原始输入。这样可以把原始下载文件、解压缓存和处理后数据严格分开：
+
+```text
+data/archives/        # 只放原始压缩包
+data/_extracted/      # 自动解压缓存
+data/processed/BMAD/  # 实验实际使用的数据
+```
+
+支持嵌套压缩包，默认最多递归 5 层；缓存依据压缩包路径、大小和修改时间生成。
