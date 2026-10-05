@@ -12,7 +12,7 @@ from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 
-EXPERIMENT_VERSION='gpu-eval-v2'
+EXPERIMENT_VERSION='gpu-eval-v3-batched-uvarfs'
 
 
 def _append_layer_rows(layer_rows,out,dname,num_layers):
