@@ -7,7 +7,7 @@ from uvarfs.preprocess import prepare_all
 
 def main():
     ap=argparse.ArgumentParser(description='Convert original BMAD source datasets under ./data into a deterministic BMAD-compatible layout.')
-    ap.add_argument('--raw-root',default='data')
+    ap.add_argument('--data-root','--raw-root',dest='data_root',default='data',help='Repository data root. Raw archives must be placed in <data-root>/archives/.')
     ap.add_argument('--out-root',default='data/processed/BMAD')
     ap.add_argument('--metadata-root',default='metadata')
     ap.add_argument('--datasets',default='all',help='comma separated: brain,liver,resc,oct2017,xray,camelyon16')
@@ -16,13 +16,15 @@ def main():
     ap.add_argument('--no-extract',action='store_true')
     args=ap.parse_args()
     ds=None if args.datasets=='all' else [x.strip().lower() for x in args.datasets.split(',') if x.strip()]
-    results=prepare_all(Path(args.raw_root),Path(args.out_root),Path(args.metadata_root),ds,args.force,args.workers,not args.no_extract)
+    results=prepare_all(Path(args.data_root),Path(args.out_root),Path(args.metadata_root),ds,args.force,args.workers,not args.no_extract)
     print('\nDataset preprocessing summary')
     print('-'*88)
     for r in results:
         print(f'{r.dataset:12s} {r.status:10s} train={r.train:6d} valid={r.valid:6d} test={r.test:6d} {r.message}')
     missing=[r for r in results if r.status=='missing']
     if missing:
-        print('\nSome raw datasets were not recognized. See data/README.md for expected layouts.')
+        print('\nERROR: one or more requested BMAD sources could not be reconstructed from data/archives/.')
+        print('See data/README.md and data/processed/BMAD/preprocess_summary.json for details.')
+        raise SystemExit(2)
 
 if __name__=='__main__': main()
