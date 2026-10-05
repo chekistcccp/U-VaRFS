@@ -153,6 +153,18 @@ def extract_archives(data_root: Path, workers: int = 4, max_depth: int = 5) -> l
             nested = [p for p in sorted(out.rglob('*')) if _is_archive(p)]
             queue.extend((p, depth + 1) for p in nested)
 
+    active = {p.resolve() for p in outputs}
+    stale = []
+    for p in dst_root.iterdir():
+        if not p.is_dir() or not (p / '.uvarfs_extracted.json').exists():
+            continue
+        if p.resolve() not in active:
+            stale.append(p)
+    for p in stale:
+        shutil.rmtree(p, ignore_errors=True)
+    if stale:
+        print(f'[extract] pruned {len(stale)} stale extraction cache(s)')
+
     return sorted(set(outputs))
 
 
