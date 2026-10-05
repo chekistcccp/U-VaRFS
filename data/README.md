@@ -77,7 +77,7 @@ data/_extracted/
 
 生成缓存指纹。压缩包没有变化时，重复运行不会重新解压。
 
-如果你替换了压缩包，新文件会得到新的缓存目录。
+如果你替换了压缩包，新文件会得到新的缓存目录；成功解压后，代码会自动清理不再对应当前 `data/archives/` 内容的旧缓存，避免重复或旧版本样本混入。
 
 ## 预处理输出
 
@@ -205,7 +205,7 @@ Camelyon16 需要：
 ## 首次建议：只跑预处理
 
 ```bash
-PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
+PREPROCESS_ONLY=1 bash run.sh
 ```
 
 如果成功，检查：
@@ -223,13 +223,13 @@ bash run.sh
 ## 强制重新预处理
 
 ```bash
-FORCE_PREPROCESS=1 PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
+FORCE_PREPROCESS=1 PREPROCESS_ONLY=1 bash run.sh
 ```
 
 ## 只处理部分数据
 
 ```bash
-DATASETS=brain,liver PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
+DATASETS=brain,liver PREPROCESS_ONLY=1 bash run.sh
 ```
 
 如果压缩包不存在、损坏，或无法从解压结果中识别所需原始结构，预处理阶段会直接报错并停止，不会继续运行后续实验。
