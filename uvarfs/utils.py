@@ -18,6 +18,7 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     torch.backends.cuda.matmul.allow_tf32 = True
+    torch.set_float32_matmul_precision('high')
     torch.backends.cudnn.allow_tf32 = True
 
 
