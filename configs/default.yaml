@@ -1,0 +1,62 @@
+seed: 42
+experiment_dir: experiment
+results_dir: results
+
+model:
+  modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
+  input_size: 448
+  batch_size: 8
+  num_workers: 8
+  amp: bf16
+  compile: false
+
+data:
+  modelscope_id: auto
+  expected_datasets: 6
+  fit_images: 256
+  variability_images: 96
+  patches_per_image: 16
+  memory_size: 20000
+  test_batch_size: 8
+
+asls:
+  geometry_tolerance: 0.05
+  variability_weight: 0.15
+  sparsity_weight: 0.02
+  steps: 300
+  lr: 0.05
+  min_layers: 2
+  max_layers: 6
+
+uvarfs:
+  beta: 0.002
+  lambda_grid: [0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001, 0.00005, 0.00002, 0.00001, 0.000005, 0.000002, 0.000001]
+  geometry_tolerance: 0.05
+  max_iter: 400
+  tol: 1.0e-5
+  min_features: 32
+  max_features: 256
+  active_threshold: 1.0e-4
+
+methods:
+  - main
+  - last_raw
+  - fixed4_raw
+  - all_raw
+  - asls_raw
+  - asls_pca
+  - asls_random
+  - fixed4_uvarfs
+  - all_uvarfs
+  - random4_uvarfs
+
+random_baseline_seeds: [42, 123, 3407, 2026, 2027]
+
+eval:
+  topk_fraction: 0.01
+  bootstrap_samples: 1000
+  save_heatmaps: true
+  max_heatmaps_per_dataset: 12
+  faiss_gpu: true
+  faiss_exact: false
+  faiss_nprobe: 16
