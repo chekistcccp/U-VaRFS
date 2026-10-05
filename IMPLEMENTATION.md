@@ -163,3 +163,12 @@ data/processed/BMAD/  # 实验实际使用的数据
 ```
 
 支持嵌套压缩包，默认最多递归 5 层；缓存依据压缩包路径、大小和修改时间生成，并自动清理已失效的旧缓存。
+
+
+## BMAD 官方整理包直接复用
+
+如果 `data/archives/` 中放的是 BMAD 官方已经整理好的 AD 压缩包，代码优先直接复用，不会再次从原始 NIfTI 重建。
+
+特别是 `Liver_AD.zip`：BMAD 官方使用 `Liver/Train/hist_DIY/{train,valid,test}`，且 valid/test 下图像位于 `img/{good,Ungood}`、掩膜位于 `label/Ungood`。当前预处理器已专门兼容并转换到统一目录。
+
+若此前旧版本已经生成过 `data/processed/BMAD/`，新版标准化器使用版本标记自动重建旧格式输出，通常无需手工删除 processed 目录。
