@@ -82,3 +82,33 @@ def test_empty_archive_directory_reports_missing(tmp_path):
     assert len(results) == 1
     assert results[0].status == 'missing'
     assert 'archives' in results[0].message
+
+
+def test_replaced_archive_prunes_stale_cache(tmp_path):
+    data_root = tmp_path / 'data'
+    archive = data_root / 'archives' / 'oct.zip'
+
+    payload1 = tmp_path / 'p1' / 'OCT2017'
+    _img(payload1 / 'train' / 'NORMAL' / 'a.png', 1)
+    _img(payload1 / 'test' / 'NORMAL' / 'a.png', 1)
+    for cls in ('CNV', 'DME', 'DRUSEN'):
+        _img(payload1 / 'test' / cls / 'a.png', 1)
+    _zip_dir(payload1, archive, 'OCT2017')
+
+    out = data_root / 'processed' / 'BMAD'
+    prepare_all(data_root, out, tmp_path / 'metadata', datasets=['oct2017'])
+    first = [p for p in (data_root / '_extracted').iterdir() if p.is_dir() and (p / '.uvarfs_extracted.json').exists()]
+    assert len(first) == 1
+
+    payload2 = tmp_path / 'p2' / 'OCT2017'
+    _img(payload2 / 'train' / 'NORMAL' / 'a.png', 2)
+    _img(payload2 / 'train' / 'NORMAL' / 'b.png', 2)
+    _img(payload2 / 'test' / 'NORMAL' / 'a.png', 2)
+    for cls in ('CNV', 'DME', 'DRUSEN'):
+        _img(payload2 / 'test' / cls / 'a.png', 2)
+    _zip_dir(payload2, archive, 'OCT2017')
+
+    prepare_all(data_root, out, tmp_path / 'metadata', datasets=['oct2017'], force=True)
+    second = [p for p in (data_root / '_extracted').iterdir() if p.is_dir() and (p / '.uvarfs_extracted.json').exists()]
+    assert len(second) == 1
+    assert second[0] != first[0]
