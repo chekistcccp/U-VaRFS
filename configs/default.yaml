@@ -18,7 +18,9 @@ data:
   variability_images: 96
   patches_per_image: 16
   memory_size: 20000
-  test_batch_size: 8
+  memory_images: 1024
+  memory_patches_per_image: 32
+  test_batch_size: 16
 
 asls:
   geometry_tolerance: 0.05
@@ -54,6 +56,14 @@ methods:
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]
 
 eval:
+  # auto => CUDA-native exact cosine 1-NN when a GPU is available; FAISS is fallback only.
+  nn_backend: auto
+  score_device: auto
+  score_dtype: fp16
+  query_chunk: 2048
+  memory_chunk: 0
+  heartbeat_batches: 20
+  resume_completed: true
   topk_fraction: 0.01
   bootstrap_samples: 1000
   save_heatmaps: true
