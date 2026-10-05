@@ -1,6 +1,6 @@
 # BMAD 原始压缩包固定放置位置
 
-请把你自行下载的 **全部 BMAD 原始压缩包** 直接放到：
+请把你自行下载的 **全部 BMAD 压缩包** 直接放到：
 
 ```text
 U-VaRFS/
@@ -15,7 +15,7 @@ U-VaRFS/
         └── <Camelyon16 压缩包>
 ```
 
-不需要手工解压，不要求改名，也不要求事先整理内部目录。
+不需要手工解压，不要求改名，也不要求事先整理内部目录。**优先支持 BMAD 官方已经整理好的 `Brain_AD.zip`、`Chest-AD.zip`、`Histopathology_AD.zip`、`Liver_AD.zip`、`Retina_OCT2017_AD.zip`、`Retina_RESC_AD.zip` 这类 AD 数据包；同时保留对 BraTS/BTCV/LiTS/RSNA 等原始源数据包的重建支持。**
 
 支持的压缩格式：
 
@@ -233,3 +233,22 @@ DATASETS=brain,liver PREPROCESS_ONLY=1 bash run.sh
 ```
 
 如果压缩包不存在、损坏，或无法从解压结果中识别所需原始结构，预处理阶段会直接报错并停止，不会继续运行后续实验。
+
+
+## 已整理 BMAD AD 数据包的特殊兼容
+
+BMAD 六个整理包的内部目录并不完全统一。当前代码会自动标准化：
+
+- Brain：`train/valid/test -> good/Ungood -> img/anomaly_mask`
+- Chest/OCT2017/RESC：自动把官方常见的 `val` / `Val/val` 统一为内部 `valid`
+- Camelyon16：直接图片目录自动转为统一的 `img/`
+- Liver：专门兼容官方 `Liver/Train/hist_DIY`：
+  - `train/good`
+  - `valid/img/good`
+  - `valid/img/Ungood`
+  - `valid/label/Ungood`
+  - `test/img/good`
+  - `test/img/Ungood`
+  - `test/label/Ungood`
+
+最终全部转换成项目统一结构，不再要求 Liver_AD 包中存在 BTCV/LiTS NIfTI。
