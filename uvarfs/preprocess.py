@@ -17,7 +17,7 @@ import numpy as np
 from PIL import Image
 
 IMG_EXTS = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
-ARCHIVE_EXTS = ('.zip', '.tar', '.tar.gz', '.tgz', '.7z')
+ARCHIVE_EXTS = ('.zip', '.tar', '.tar.gz', '.tgz', '.tar.xz', '.txz', '.7z')
 
 
 @dataclass
@@ -35,57 +35,125 @@ def _safe_rel(member: str) -> bool:
     return not p.is_absolute() and '..' not in p.parts
 
 
-def extract_archives(raw_root: Path, workers: int = 4) -> list[Path]:
-    """Extract user-provided archives into data/_extracted without touching originals."""
-    raw_root = Path(raw_root)
-    dst_root = raw_root / '_extracted'
-    dst_root.mkdir(parents=True, exist_ok=True)
-    found = []
-    # Do not recursively extract archives we have already extracted.
-    for p in raw_root.rglob('*'):
-        if '_extracted' in p.parts or not p.is_file():
-            continue
-        name = p.name.lower()
-        if name.endswith(ARCHIVE_EXTS):
-            found.append(p)
-    outputs = []
-    for archive in sorted(found):
-        tag = hashlib.sha1(str(archive.resolve()).encode()).hexdigest()[:10]
-        stem = archive.name
-        for suffix in ('.tar.gz', '.tgz', '.zip', '.tar', '.7z'):
-            if stem.lower().endswith(suffix):
-                stem = stem[:-len(suffix)]
-                break
-        out = dst_root / f'{stem}_{tag}'
-        marker = out / '.uvarfs_extracted'
-        if marker.exists():
-            outputs.append(out)
-            continue
-        out.mkdir(parents=True, exist_ok=True)
-        try:
-            low = archive.name.lower()
-            if low.endswith('.zip'):
-                with zipfile.ZipFile(archive) as z:
-                    bad = [m.filename for m in z.infolist() if not _safe_rel(m.filename)]
-                    if bad:
-                        raise RuntimeError(f'unsafe paths in {archive}: {bad[:3]}')
-                    z.extractall(out)
-            elif low.endswith(('.tar', '.tar.gz', '.tgz')):
-                with tarfile.open(archive) as t:
-                    bad = [m.name for m in t.getmembers() if not _safe_rel(m.name)]
-                    if bad:
-                        raise RuntimeError(f'unsafe paths in {archive}: {bad[:3]}')
-                    t.extractall(out)
-            elif low.endswith('.7z'):
+def _is_archive(path: Path) -> bool:
+    name = path.name.lower()
+    return path.is_file() and any(name.endswith(ext) for ext in ARCHIVE_EXTS)
+
+
+def _archive_stem(path: Path) -> str:
+    name = path.name
+    for suffix in sorted(ARCHIVE_EXTS, key=len, reverse=True):
+        if name.lower().endswith(suffix):
+            return name[:-len(suffix)] or 'archive'
+    return path.stem
+
+
+def _extract_one_archive(archive: Path, dst_root: Path) -> Path:
+    stat = archive.stat()
+    fingerprint = f'{archive.resolve()}|{stat.st_size}|{stat.st_mtime_ns}'
+    tag = hashlib.sha1(fingerprint.encode()).hexdigest()[:12]
+    out = dst_root / f'{_archive_stem(archive)}_{tag}'
+    marker = out / '.uvarfs_extracted.json'
+    if marker.exists():
+        return out
+
+    tmp = dst_root / f'.tmp_{_archive_stem(archive)}_{tag}'
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True, exist_ok=True)
+    try:
+        low = archive.name.lower()
+        if low.endswith('.zip'):
+            with zipfile.ZipFile(archive) as z:
+                bad = [m.filename for m in z.infolist() if not _safe_rel(m.filename)]
+                if bad:
+                    raise RuntimeError(f'unsafe paths in {archive}: {bad[:3]}')
+                z.extractall(tmp)
+        elif low.endswith(('.tar', '.tar.gz', '.tgz', '.tar.xz', '.txz')):
+            with tarfile.open(archive) as t:
+                members = t.getmembers()
+                bad = [m.name for m in members if (not _safe_rel(m.name)) or m.issym() or m.islnk()]
+                if bad:
+                    raise RuntimeError(f'unsafe paths/links in {archive}: {bad[:3]}')
+                t.extractall(tmp)
+        elif low.endswith('.7z'):
+            try:
                 import py7zr
-                with py7zr.SevenZipFile(archive, mode='r') as z:
-                    z.extractall(out)
-            marker.write_text(str(archive), encoding='utf-8')
-            outputs.append(out)
-        except Exception:
-            shutil.rmtree(out, ignore_errors=True)
-            raise
-    return outputs
+            except ImportError as e:
+                raise RuntimeError('py7zr is required because a .7z archive was found') from e
+            with py7zr.SevenZipFile(archive, mode='r') as z:
+                names = z.getnames()
+                bad = [name for name in names if not _safe_rel(name)]
+                if bad:
+                    raise RuntimeError(f'unsafe paths in {archive}: {bad[:3]}')
+                z.extractall(tmp)
+        else:
+            raise RuntimeError(f'unsupported archive type: {archive}')
+
+        marker_payload = {
+            'source': str(archive.resolve()),
+            'size': stat.st_size,
+            'mtime_ns': stat.st_mtime_ns,
+        }
+        (tmp / '.uvarfs_extracted.json').write_text(
+            json.dumps(marker_payload, indent=2, ensure_ascii=False), encoding='utf-8'
+        )
+        if out.exists():
+            shutil.rmtree(out)
+        tmp.rename(out)
+        return out
+    except Exception:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+
+
+def extract_archives(data_root: Path, workers: int = 4, max_depth: int = 5) -> list[Path]:
+    """Extract all user-provided archives from data/archives into data/_extracted.
+
+    The archive directory is the *only* raw-data entry point. Extraction is cached
+    using path + size + mtime and supports nested archives for up to max_depth
+    rounds. Original archives are never modified or deleted.
+    """
+    del workers  # reserved for future parallel archive extraction
+    data_root = Path(data_root)
+    archive_root = data_root / 'archives'
+    dst_root = data_root / '_extracted'
+    archive_root.mkdir(parents=True, exist_ok=True)
+    dst_root.mkdir(parents=True, exist_ok=True)
+
+    queue: list[tuple[Path, int]] = [(p, 0) for p in sorted(archive_root.rglob('*')) if _is_archive(p)]
+    outputs: list[Path] = []
+    seen: set[str] = set()
+
+    if not queue:
+        cached = [p for p in dst_root.iterdir() if p.is_dir() and (p / '.uvarfs_extracted.json').exists()]
+        if cached:
+            print(f'[extract] no archives currently in {archive_root}; reusing {len(cached)} cached extraction roots')
+            return sorted(cached)
+        print(f'[extract] no supported archives found in fixed input directory: {archive_root}')
+        return []
+
+    print(f'[extract] found {len(queue)} top-level archive(s) in {archive_root}')
+    while queue:
+        archive, depth = queue.pop(0)
+        try:
+            key = str(archive.resolve())
+        except OSError:
+            key = str(archive)
+        if key in seen:
+            continue
+        seen.add(key)
+        if depth > max_depth:
+            raise RuntimeError(f'nested archive depth exceeded {max_depth}: {archive}')
+
+        out = _extract_one_archive(archive, dst_root)
+        outputs.append(out)
+        print(f'[extract] depth={depth} {archive.name} -> {out.name}')
+
+        if depth < max_depth:
+            nested = [p for p in sorted(out.rglob('*')) if _is_archive(p)]
+            queue.extend((p, depth + 1) for p in nested)
+
+    return sorted(set(outputs))
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:
@@ -503,25 +571,52 @@ def prepare_camelyon(raw_root: Path, out_root: Path, metadata_root: Path, force:
     return PrepResult('camelyon16','processed',_count_split(dst,'train'),_count_split(dst,'valid'),_count_split(dst,'test'))
 
 
-def prepare_all(raw_root: Path, out_root: Path, metadata_root: Path, datasets: Sequence[str]|None=None, force: bool=False, workers: int=8, extract: bool=True) -> list[PrepResult]:
-    raw_root=Path(raw_root).resolve(); out_root=Path(out_root).resolve(); metadata_root=Path(metadata_root).resolve(); out_root.mkdir(parents=True,exist_ok=True)
-    if extract: extract_archives(raw_root,workers)
-    reused=normalize_existing_processed(raw_root,out_root)
+def prepare_all(data_root: Path, out_root: Path, metadata_root: Path, datasets: Sequence[str]|None=None, force: bool=False, workers: int=8, extract: bool=True) -> list[PrepResult]:
+    data_root=Path(data_root).resolve()
+    out_root=Path(out_root).resolve()
+    metadata_root=Path(metadata_root).resolve()
+    out_root.mkdir(parents=True,exist_ok=True)
+
+    archive_root=data_root/'archives'
+    extracted_root=data_root/'_extracted'
+    archive_root.mkdir(parents=True,exist_ok=True)
+    extracted_root.mkdir(parents=True,exist_ok=True)
+
+    if extract:
+        extract_archives(data_root,workers)
+
+    # Intentionally scan ONLY the extraction cache. This guarantees that users can
+    # keep every original BMAD download untouched in one fixed directory.
+    scan_root=extracted_root
+    if not any(p.is_file() for p in scan_root.rglob('*')):
+        result=PrepResult('all','missing',message=f'No extracted raw data found. Put BMAD archives in {archive_root} and rerun.')
+        (out_root/'preprocess_summary.json').write_text(
+            json.dumps([result.__dict__],indent=2,ensure_ascii=False),encoding='utf-8'
+        )
+        return [result]
+
+    reused=normalize_existing_processed(scan_root,out_root)
     wanted=set(x.lower() for x in datasets) if datasets else None
     funcs=[
-        ('brain', lambda:prepare_brain(raw_root,out_root,metadata_root,force)),
-        ('liver', lambda:prepare_liver(raw_root,out_root,force)),
-        ('resc', lambda:prepare_resc(raw_root,out_root,force)),
-        ('oct2017', lambda:prepare_oct2017(raw_root,out_root,force)),
-        ('xray', lambda:prepare_xray(raw_root,out_root,force,workers)),
-        ('camelyon16', lambda:prepare_camelyon(raw_root,out_root,metadata_root,force,workers)),
+        ('brain', lambda:prepare_brain(scan_root,out_root,metadata_root,force)),
+        ('liver', lambda:prepare_liver(scan_root,out_root,force)),
+        ('resc', lambda:prepare_resc(scan_root,out_root,force)),
+        ('oct2017', lambda:prepare_oct2017(scan_root,out_root,force)),
+        ('xray', lambda:prepare_xray(scan_root,out_root,force,workers)),
+        ('camelyon16', lambda:prepare_camelyon(scan_root,out_root,metadata_root,force,workers)),
     ]
     results=list(reused)
     existing={r.dataset.lower() for r in results}
     for name,fn in funcs:
-        if wanted and name not in wanted: continue
-        if name in existing and not force: continue
+        if wanted and name not in wanted:
+            continue
+        if name in existing and not force:
+            continue
         results.append(fn())
+
     summary=[r.__dict__ for r in results]
-    (out_root/'preprocess_summary.json').write_text(json.dumps(summary,indent=2,ensure_ascii=False),encoding='utf-8')
+    (out_root/'preprocess_summary.json').write_text(
+        json.dumps(summary,indent=2,ensure_ascii=False),encoding='utf-8'
+    )
     return results
+
