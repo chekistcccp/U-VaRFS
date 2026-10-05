@@ -12,6 +12,8 @@ from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 
+EXPERIMENT_VERSION='gpu-eval-v2'
+
 
 def _append_layer_rows(layer_rows,out,dname,num_layers):
     apath=out/'asls.json'
@@ -71,7 +73,8 @@ def main():
                 existing=pd.read_csv(metrics_path)
             except Exception:
                 existing=pd.DataFrame()
-            if not existing.empty and 'method' in existing.columns:
+            compatible=(not existing.empty and 'method' in existing.columns and 'experiment_version' in existing.columns and existing['experiment_version'].astype(str).eq(EXPERIMENT_VERSION).all())
+            if compatible:
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
                 _append_layer_rows(layer_rows,out,dname,extractor.num_layers)
@@ -125,7 +128,7 @@ def main():
                 selected_layer_count=len(spec['layers']),
                 feature_dim=dim,candidate_dim=candidate_dim,
                 compression_ratio=1.0-dim/max(candidate_dim,1),
-                memory_size=len(memories[r['method']]),
+                memory_size=len(memories[r['method']]),experiment_version=EXPERIMENT_VERSION,
             )
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
