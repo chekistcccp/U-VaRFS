@@ -36,7 +36,7 @@ bash run.sh
 先不下载模型、不跑实验：
 
 ```bash
-SKIP_MODEL_DOWNLOAD=1 PREPROCESS_ONLY=1 bash run.sh
+PREPROCESS_ONLY=1 bash run.sh
 ```
 
 确认 `data/processed/BMAD/` 和 `data/processed/BMAD/preprocess_summary.json` 正常后，再运行完整实验：
@@ -80,13 +80,13 @@ BMAD 官方部分原始预处理脚本使用了 `set()` / 未排序 `os.listdir(
 只处理部分数据：
 
 ```bash
-DATASETS=brain,liver PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
+DATASETS=brain,liver PREPROCESS_ONLY=1 bash run.sh
 ```
 
 强制重新生成预处理数据：
 
 ```bash
-FORCE_PREPROCESS=1 PREPROCESS_ONLY=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
+FORCE_PREPROCESS=1 PREPROCESS_ONLY=1 bash run.sh
 ```
 
 已有预处理数据时跳过：
@@ -162,4 +162,4 @@ data/_extracted/      # 自动解压缓存
 data/processed/BMAD/  # 实验实际使用的数据
 ```
 
-支持嵌套压缩包，默认最多递归 5 层；缓存依据压缩包路径、大小和修改时间生成。
+支持嵌套压缩包，默认最多递归 5 层；缓存依据压缩包路径、大小和修改时间生成，并自动清理已失效的旧缓存。
