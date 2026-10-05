@@ -1,5 +1,8 @@
 seed: 42
-experiment_dir: experiment
+paths:
+  raw_data: data
+  processed_data: data/processed/BMAD
+  model_dir: models/dinov3_vitsplus
 results_dir: results
 
 model:
@@ -11,8 +14,6 @@ model:
   compile: false
 
 data:
-  modelscope_id: auto
-  expected_datasets: 6
   fit_images: 256
   variability_images: 96
   patches_per_image: 16

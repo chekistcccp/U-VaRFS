@@ -1,3 +1,8 @@
+> **当前实现方式（2026-10 更新）**  
+> 你自行创建/激活实验环境，并把 BMAD 六个来源数据集的**原始文件或原始压缩包**放入仓库根目录 `data/`。  
+> `bash run.sh` 不会安装 Python/Conda 环境，也不会下载 BMAD 数据；它会检查环境、用 ModelScope 下载 DINOv3（可跳过）、自动预处理原始 BMAD 数据到 `data/processed/BMAD/`，然后运行全部 U-VaRFS 实验与指标计算。  
+> 原始数据目录与处理细节见 [data/README.md](data/README.md)，执行说明见 [IMPLEMENTATION.md](IMPLEMENTATION.md)。
+
 # U-VaRFS：DINOv3 自适应稀疏层选择与无监督可变性正则特征选择用于医学图像异常检测
 
 > **当前阶段：实验设计说明（v0.1）**  
