@@ -72,7 +72,7 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
     print(f"[fit] ASLS start: layers={len(pooled)} pooled_samples={next(iter(pooled.values())).shape[0]}", flush=True)
     asls = fit_asls(pooled, layer_var, cfg["asls"])
-    print(f"[fit] ASLS done: selected_layers={asls[\'selected_layers\']} geometry_error={asls[\'geometry_error\']:.4f}", flush=True)
+    print(f"[fit] ASLS done: selected_layers={asls['selected_layers']} geometry_error={asls['geometry_error']:.4f}", flush=True)
     save_json(asls, dataset_out / "asls.json")
     return patches, var_vectors, asls
 
