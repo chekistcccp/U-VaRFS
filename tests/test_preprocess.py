@@ -112,3 +112,54 @@ def test_replaced_archive_prunes_stale_cache(tmp_path):
     second = [p for p in (data_root / '_extracted').iterdir() if p.is_dir() and (p / '.uvarfs_extracted.json').exists()]
     assert len(second) == 1
     assert second[0] != first[0]
+
+
+def test_released_liver_hist_diy_archive(tmp_path):
+    payload = tmp_path / 'payload' / 'Liver' / 'Train' / 'hist_DIY'
+
+    for i in range(6):
+        _img(payload / 'train' / 'good' / f'train_{i}.png', i)
+
+    for split in ('valid', 'test'):
+        for i in range(3):
+            _img(payload / split / 'img' / 'good' / f'g_{i}.png', i)
+        for i in range(4):
+            _img(payload / split / 'img' / 'Ungood' / f'b_{i}.png', i)
+            _img(payload / split / 'label' / 'Ungood' / f'b_{i}.png', 255)
+
+    data_root = tmp_path / 'data'
+    _zip_dir(payload, data_root / 'archives' / 'Liver_AD.zip', 'Liver/Train/hist_DIY')
+
+    out = data_root / 'processed' / 'BMAD'
+    results = prepare_all(data_root, out, tmp_path / 'metadata', datasets=['liver'])
+    r = next(x for x in results if x.dataset == 'liver')
+
+    assert r.status == 'reused'
+    assert r.train == 6
+    assert r.valid == 7
+    assert r.test == 7
+    assert len(list((out / 'liver' / 'test' / 'Ungood' / 'anomaly_mask').glob('*.png'))) == 4
+
+
+def test_released_val_alias_is_normalized_to_valid(tmp_path):
+    payload = tmp_path / 'payload' / 'Chest-RSNA'
+    for i in range(5):
+        _img(payload / 'train' / 'good' / f't_{i}.png', i)
+    for i in range(2):
+        _img(payload / 'val' / 'good' / f'vg_{i}.png', i)
+        _img(payload / 'val' / 'Ungood' / f'vb_{i}.png', i)
+        _img(payload / 'test' / 'good' / f'tg_{i}.png', i)
+        _img(payload / 'test' / 'Ungood' / f'tb_{i}.png', i)
+
+    data_root = tmp_path / 'data'
+    _zip_dir(payload, data_root / 'archives' / 'Chest-AD.zip', 'Chest-RSNA')
+
+    out = data_root / 'processed' / 'BMAD'
+    results = prepare_all(data_root, out, tmp_path / 'metadata', datasets=['xray'])
+    r = next(x for x in results if x.dataset == 'xray')
+
+    assert r.status == 'reused'
+    assert r.train == 5
+    assert r.valid == 4
+    assert r.test == 4
+    assert (out / 'xray' / 'valid' / 'good' / 'img').is_dir()
