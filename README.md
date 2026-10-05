@@ -1,3 +1,4 @@
+> **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
 > **数据入口已固定为 `data/archives/`**  
 > 你只需把自行下载的 BMAD 原始压缩包全部放入该目录，不需要手工解压、改名或整理内部目录。  
 > `bash run.sh` 会自动解压到 `data/_extracted/`、识别并预处理到 `data/processed/BMAD/`，然后运行 U-VaRFS 全部实验。详见 [data/README.md](data/README.md)。
