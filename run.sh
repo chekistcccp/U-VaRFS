@@ -6,6 +6,7 @@ mkdir -p data/archives data/_extracted data/processed/BMAD
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 export KERAS_BACKEND=torch
 export TOKENIZERS_PARALLELISM=false
+export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-8}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-8}"
 
@@ -39,6 +40,8 @@ if [[ "${SKIP_MODEL_DOWNLOAD:-0}" != "1" ]]; then
 fi
 
 mkdir -p results logs
-"$PYTHON" scripts/run_all.py --config "$CONFIG" --dataset "$DATASETS" 2>&1 | tee logs/run_all.log
+RUN=("$PYTHON" -u scripts/run_all.py --config "$CONFIG" --dataset "$DATASETS")
+[[ "${FORCE_EXPERIMENT:-0}" == "1" ]] && RUN+=(--force)
+"${RUN[@]}" 2>&1 | tee logs/run_all.log
 
 echo "Done. Main tables: results/all_metrics.csv and results/summary_metrics.csv"
