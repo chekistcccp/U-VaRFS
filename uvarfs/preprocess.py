@@ -237,38 +237,185 @@ def _count_split(root: Path, split: str) -> int:
     return count
 
 
+NORMALIZE_VERSION = 2
+
+
+def _split_root(root: Path, split: str) -> Path | None:
+    if split == 'train':
+        candidates = [root/'train', root/'Train'/'train', root/'Train']
+    elif split == 'valid':
+        candidates = [
+            root/'valid', root/'val', root/'validation',
+            root/'Val'/'val', root/'Val'/'valid', root/'Val',
+        ]
+    elif split == 'test':
+        candidates = [root/'test', root/'Test'/'test', root/'Test']
+    else:
+        candidates = [root/split]
+    return next((p for p in candidates if p.is_dir()), None)
+
+
+def _class_image_root(split_root: Path | None, label: int) -> Path | None:
+    if split_root is None:
+        return None
+    names = ('good', 'normal') if label == 0 else ('Ungood', 'ungood', 'bad', 'abnormal')
+    candidates = []
+    for name in names:
+        candidates.extend([
+            split_root/name/'img',
+            split_root/name/'image',
+            split_root/name,
+            split_root/'img'/name,
+            split_root/'image'/name,
+            split_root/'images'/name,
+        ])
+    for p in candidates:
+        if p.is_dir() and any(x.is_file() and x.suffix.lower() in IMG_EXTS for x in p.rglob('*')):
+            return p
+    return None
+
+
+def _class_mask_root(split_root: Path | None) -> Path | None:
+    if split_root is None:
+        return None
+    names = ('Ungood', 'ungood', 'bad', 'abnormal')
+    candidates = []
+    for name in names:
+        candidates.extend([
+            split_root/name/'anomaly_mask',
+            split_root/name/'mask',
+            split_root/'anomaly_mask'/name,
+            split_root/'mask'/name,
+            split_root/'label'/name,
+            split_root/'labels'/name,
+        ])
+    for p in candidates:
+        if p.is_dir() and any(x.is_file() and x.suffix.lower() in IMG_EXTS for x in p.rglob('*')):
+            return p
+    return None
+
+
 def _looks_processed_dataset(root: Path) -> bool:
-    return (root / 'train').is_dir() and (root / 'test').is_dir() and any(
-        (root / 'train' / name).exists() for name in ('good', 'normal')
-    )
+    train = _split_root(root, 'train')
+    test = _split_root(root, 'test')
+    return train is not None and test is not None and _class_image_root(train, 0) is not None
 
 
-def normalize_existing_processed(raw_root: Path, out_root: Path) -> list[PrepResult]:
+def _canonical_from_path(path: Path) -> str | None:
     aliases = {
-        'brain': 'Brain', 'brats': 'Brain', 'liver': 'liver', 'resc': 'RESC',
-        'oct2017': 'OCT2017', 'rsna': 'xray', 'xray': 'xray', 'chest': 'xray',
+        'brain': 'Brain', 'brats': 'Brain',
+        'liver': 'liver', 'lits': 'liver', 'btcv': 'liver', 'atlas': 'liver', 'altas': 'liver',
+        'resc': 'RESC',
+        'oct2017': 'OCT2017', 'oct_2017': 'OCT2017', 'kermany': 'OCT2017',
+        'rsna': 'xray', 'xray': 'xray', 'chest': 'xray',
         'camelyon16': 'camelyon16', 'camelyon': 'camelyon16',
     }
+    normalized_parts = [x.lower().replace('-', '').replace('_', '') for x in path.parts]
+    joined = '/'.join(normalized_parts)
+    for key, val in aliases.items():
+        token = key.lower().replace('-', '').replace('_', '')
+        if token in joined:
+            return val
+    return None
+
+
+def _copy_processed_class(src_root: Path | None, dst_root: Path) -> int:
+    if src_root is None:
+        return 0
+    count = 0
+    for src in sorted(src_root.rglob('*')):
+        if not src.is_file() or src.suffix.lower() not in IMG_EXTS:
+            continue
+        # Do not accidentally copy masks/labels if a source class directory contains them.
+        if any(part.lower() in ('anomaly_mask', 'mask', 'label', 'labels') for part in src.relative_to(src_root).parts[:-1]):
+            continue
+        rel = src.relative_to(src_root)
+        _link_or_copy(src, dst_root/rel)
+        count += 1
+    return count
+
+
+def _copy_processed_masks(src_root: Path | None, dst_root: Path) -> int:
+    if src_root is None:
+        return 0
+    count = 0
+    for src in sorted(src_root.rglob('*')):
+        if not src.is_file() or src.suffix.lower() not in IMG_EXTS:
+            continue
+        rel = src.relative_to(src_root)
+        _link_or_copy(src, dst_root/rel)
+        count += 1
+    return count
+
+
+def normalize_existing_processed(raw_root: Path, out_root: Path, force: bool=False) -> list[PrepResult]:
+    """Normalize BMAD's released AD archives into one internal layout.
+
+    BMAD's six released datasets are not directory-identical. In particular the
+    liver archive uses hist_DIY/{valid,test}/img/{good,Ungood} and
+    hist_DIY/{valid,test}/label/Ungood, while several classification datasets use
+    'val' instead of 'valid'. This function canonicalizes all of those variants.
+    """
     results = []
+    claimed: set[str] = set()
+
     for p in sorted(raw_root.rglob('*')):
         if not p.is_dir() or out_root in p.parents or not _looks_processed_dataset(p):
             continue
-        lname = p.name.lower().replace('-', '').replace('_', '')
-        canonical = None
-        for key, val in aliases.items():
-            if key.replace('_', '') in lname:
-                canonical = val
-                break
-        if not canonical:
+        canonical = _canonical_from_path(p)
+        if canonical is None or canonical.lower() in claimed:
             continue
-        dst = out_root / canonical
-        if dst.exists() and any(dst.rglob('*.png')):
-            continue
-        for f in p.rglob('*'):
-            if f.is_file():
-                rel = f.relative_to(p)
-                _link_or_copy(f, dst / rel)
-        results.append(PrepResult(canonical, 'reused', _count_split(dst,'train'), _count_split(dst,'valid'), _count_split(dst,'test'), f'normalized from {p}'))
+
+        dst = out_root/canonical
+        marker = dst/'.uvarfs_normalized.json'
+        source_key = str(p.resolve())
+        if not force and marker.exists():
+            try:
+                meta = json.loads(marker.read_text(encoding='utf-8'))
+            except Exception:
+                meta = {}
+            if meta.get('version') == NORMALIZE_VERSION and meta.get('source') == source_key:
+                results.append(PrepResult(
+                    canonical, 'reused',
+                    _count_split(dst,'train'), _count_split(dst,'valid'), _count_split(dst,'test'),
+                    f'normalized from {p}'
+                ))
+                claimed.add(canonical.lower())
+                continue
+
+        if dst.exists():
+            shutil.rmtree(dst)
+
+        split_stats = {}
+        for split in ('train', 'valid', 'test'):
+            src_split = _split_root(p, split)
+            good_root = _class_image_root(src_split, 0)
+            bad_root = _class_image_root(src_split, 1)
+
+            good_n = _copy_processed_class(good_root, dst/split/'good'/'img')
+            bad_n = _copy_processed_class(bad_root, dst/split/'Ungood'/'img')
+            mask_root = _class_mask_root(src_split)
+            mask_n = _copy_processed_masks(mask_root, dst/split/'Ungood'/'anomaly_mask')
+            split_stats[split] = {
+                'good': good_n, 'Ungood': bad_n, 'masks': mask_n,
+                'source_split': str(src_split) if src_split else None,
+            }
+
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({
+            'version': NORMALIZE_VERSION,
+            'source': source_key,
+            'canonical': canonical,
+            'split_stats': split_stats,
+        }, indent=2, ensure_ascii=False), encoding='utf-8')
+
+        results.append(PrepResult(
+            canonical, 'reused',
+            _count_split(dst,'train'), _count_split(dst,'valid'), _count_split(dst,'test'),
+            f'normalized from {p}'
+        ))
+        claimed.add(canonical.lower())
+
     return results
 
 
@@ -607,7 +754,7 @@ def prepare_all(data_root: Path, out_root: Path, metadata_root: Path, datasets: 
         )
         return [result]
 
-    reused=normalize_existing_processed(scan_root,out_root)
+    reused=normalize_existing_processed(scan_root,out_root,force)
     wanted=set(x.lower() for x in datasets) if datasets else None
     funcs=[
         ('brain', lambda:prepare_brain(scan_root,out_root,metadata_root,force)),
