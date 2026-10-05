@@ -62,7 +62,7 @@ class TorchCosineIndex:
         self.memory=mem.contiguous()
 
     @torch.inference_mode()
-    def score(self, q: torch.Tensor) -> np.ndarray:
+    def score_tensor(self, q: torch.Tensor) -> torch.Tensor:
         q=F.normalize(q.detach().float(),dim=1)
         if q.device != self.device:
             q=q.to(self.device,non_blocking=True)
@@ -80,8 +80,12 @@ class TorchCosineIndex:
                     best=torch.maximum(best,sim)
             else:
                 best=(qq @ self.memory.T).float().amax(dim=1)
-            outs.append((1.0-best.clamp(-1.0,1.0)).cpu())
-        return torch.cat(outs).numpy()
+            outs.append(1.0-best.clamp(-1.0,1.0))
+        return torch.cat(outs)
+
+    @torch.inference_mode()
+    def score(self, q: torch.Tensor) -> np.ndarray:
+        return self.score_tensor(q).cpu().numpy()
 
 
 class CosineIndex:
