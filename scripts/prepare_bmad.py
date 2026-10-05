@@ -6,7 +6,7 @@ from uvarfs.preprocess import prepare_all
 
 
 def main():
-    ap=argparse.ArgumentParser(description='Convert original BMAD source datasets under ./data into a deterministic BMAD-compatible layout.')
+    ap=argparse.ArgumentParser(description='Normalize released BMAD AD archives or reconstruct original BMAD source datasets into a deterministic internal layout.')
     ap.add_argument('--data-root','--raw-root',dest='data_root',default='data',help='Repository data root. Raw archives must be placed in <data-root>/archives/.')
     ap.add_argument('--out-root',default='data/processed/BMAD')
     ap.add_argument('--metadata-root',default='metadata')
