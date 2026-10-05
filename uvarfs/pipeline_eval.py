@@ -136,21 +136,42 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
         cache={}
         for name,spec in specs.items():
             z=transform(feats,spec,cache)
-            sc=indices[name].score(z.reshape(-1,z.shape[-1])).reshape(b,-1)
-            k=max(1,int(math.ceil(sc.shape[1]*frac)))
-            img=np.mean(np.partition(sc,-k,axis=1)[:,-k:],axis=1)
-            scores[name].extend(img.tolist())
+            flat=z.reshape(-1,z.shape[-1])
+            index=indices[name]
+            if hasattr(index,'score_tensor'):
+                sc_t=index.score_tensor(flat).reshape(b,-1)
+                k=max(1,int(math.ceil(sc_t.shape[1]*frac)))
+                img=sc_t.topk(k,dim=1,largest=True,sorted=False).values.mean(dim=1).float().cpu().numpy()
+                scores[name].extend(img.tolist())
+                if has_local:
+                    if sc_t.shape[1] != grid*grid:
+                        raise RuntimeError(
+                            f'Unexpected DINO patch-token count {sc_t.shape[1]} for grid {grid}x{grid}; '
+                            f'input={cfg["model"]["input_size"]}, patch={extractor.patch_size}'
+                        )
+                    maps=F.interpolate(
+                        sc_t.reshape(b,1,grid,grid).float(),
+                        size=(int(cfg['model']['input_size']),)*2,
+                        mode='bilinear',align_corners=False
+                    )[:,0].cpu().numpy()
+            else:
+                sc=index.score(flat).reshape(b,-1)
+                k=max(1,int(math.ceil(sc.shape[1]*frac)))
+                img=np.mean(np.partition(sc,-k,axis=1)[:,-k:],axis=1)
+                scores[name].extend(img.tolist())
+                if has_local:
+                    if sc.shape[1] != grid*grid:
+                        raise RuntimeError(
+                            f'Unexpected DINO patch-token count {sc.shape[1]} for grid {grid}x{grid}; '
+                            f'input={cfg["model"]["input_size"]}, patch={extractor.patch_size}'
+                        )
+                    maps=torch.from_numpy(sc.reshape(b,grid,grid))[:,None]
+                    maps=F.interpolate(
+                        maps,size=(int(cfg['model']['input_size']),)*2,
+                        mode='bilinear',align_corners=False
+                    )[:,0].numpy()
+
             if has_local:
-                if sc.shape[1] != grid*grid:
-                    raise RuntimeError(
-                        f'Unexpected DINO patch-token count {sc.shape[1]} for grid {grid}x{grid}; '
-                        f'input={cfg["model"]["input_size"]}, patch={extractor.patch_size}'
-                    )
-                maps=torch.from_numpy(sc.reshape(b,grid,grid))[:,None]
-                maps=F.interpolate(
-                    maps,size=(int(cfg['model']['input_size']),)*2,
-                    mode='bilinear',align_corners=False
-                )[:,0].numpy()
                 for i in range(b):
                     label_i=int(batch['label'][i]); has_i=bool(batch['has_mask'][i])
                     if label_i==0 or has_i:
