@@ -37,6 +37,8 @@ uvarfs:
   geometry_tolerance: 0.05
   max_iter: 400
   tol: 1.0e-5
+  check_every: 25
+  log_every: 50
   min_features: 32
   max_features: 256
   active_threshold: 1.0e-4
