@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 cd "$(dirname "$0")"
+mkdir -p data/archives data/_extracted data/processed/BMAD
 export PYTHONPATH="$PWD:${PYTHONPATH:-}"
 export KERAS_BACKEND=torch
 export TOKENIZERS_PARALLELISM=false
@@ -19,7 +20,7 @@ if [[ "${SKIP_MODEL_DOWNLOAD:-0}" != "1" ]]; then
 fi
 
 if [[ "${SKIP_PREPROCESS:-0}" != "1" ]]; then
-  PREP=("$PYTHON" scripts/prepare_bmad.py --raw-root data --out-root data/processed/BMAD --metadata-root metadata --datasets "$DATASETS" --workers "$WORKERS")
+  PREP=("$PYTHON" scripts/prepare_bmad.py --data-root data --out-root data/processed/BMAD --metadata-root metadata --datasets "$DATASETS" --workers "$WORKERS")
   [[ "${FORCE_PREPROCESS:-0}" == "1" ]] && PREP+=(--force)
   "${PREP[@]}"
 fi
