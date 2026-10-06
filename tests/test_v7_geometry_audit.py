@@ -49,7 +49,8 @@ def test_search_infeasible_fallback_checks_entire_layer_budget():
 def test_saved_normal_geometry_reuses_fit_gates_and_original_prefix(mode):
     generator=torch.Generator().manual_seed(18)
     features={i:torch.randn(16,4,generator=generator) for i in range(1,7)}
-    cfg={'steps':5,'geometry_representation':mode,'min_layers':2,'max_layers':4,'geometry_tolerance':.05}
+    cfg={'steps':5,'geometry_representation':mode,'discrete_selection':'gate_prefix',
+         'min_layers':2,'max_layers':4,'geometry_tolerance':.05}
     fitted=fit_asls(features,{i:i/6 for i in features},cfg)
     replay=reselect_asls(fitted,cfg,'gate_prefix')
     assert fitted['discrete_selection']=='gate_prefix'

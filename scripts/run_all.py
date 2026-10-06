@@ -129,6 +129,8 @@ def main():
                    'torch_version':torch.__version__,'cuda_version':torch.version.cuda,
                    'objective_matmul_precision':'highest',
                    'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
+                   'asls_discrete_selection':cfg['asls'].get('discrete_selection','geometry_search'),
+                   'uvarfs_sparsity_strategy':cfg['uvarfs'].get('sparsity_strategy','objective_prune_refit'),
                    'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
                   out/'run_metadata.json')
 
@@ -195,7 +197,13 @@ def main():
                          uvarfs_budgeted_box_optimality_gap=spec['obj']['budgeted_box_optimality_gap'],
                          uvarfs_budgeted_objective_converged=spec['obj']['budgeted_objective_converged'],
                          uvarfs_fixed_support_geometry_floor=spec['obj']['fixed_support_geometry_floor'],
-                         uvarfs_fixed_support_can_meet_tolerance=spec['obj']['fixed_support_can_meet_tolerance'])
+                         uvarfs_fixed_support_can_meet_tolerance=spec['obj']['fixed_support_can_meet_tolerance'],
+                         uvarfs_sparsity_strategy=spec['obj']['sparsity_strategy'],
+                         uvarfs_budget_source=spec['obj'].get('budget_source','top_weights'),
+                         uvarfs_objective_improvement=spec['obj'].get('objective_improvement',0.),
+                         uvarfs_geometry_improvement=spec['obj'].get('geometry_improvement',0.),
+                         uvarfs_fixed_support_box_gap=spec['obj'].get('fixed_support_box_gap'),
+                         uvarfs_fixed_support_converged=spec['obj'].get('fixed_support_converged'))
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)

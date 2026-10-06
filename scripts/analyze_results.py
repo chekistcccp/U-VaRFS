@@ -161,7 +161,8 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_raw':[f'randomk_raw_seed{s}' for s in seeds],
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
-        for method in ['asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs']:
+        for method in ['asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
+                       'asls_top_weights_uvarfs','legacy_main']:
             if method in source.method.values:
                 comparisons[method]=[method]
         intervals=paired_bootstrap(predictions,comparisons,draws=draws)
@@ -190,6 +191,11 @@ def audit(results: Path, output: Path, draws: int):
                             'projected_residual':uv['projected_residual'],'relative_change':selected['relative_change'],
                             'objective_converged':uv.get('objective_converged'),
                             'box_optimality_gap':uv.get('box_optimality_gap'),
+                            'discrete_selection':a.get('discrete_selection','gate_prefix'),
+                            'sparsity_strategy':uv.get('sparsity_strategy','top_weights'),
+                            'budgeted_objective':uv.get('budgeted_objective'),
+                            'budgeted_box_optimality_gap':uv.get('budgeted_box_optimality_gap'),
+                            'fixed_support_box_gap':uv.get('fixed_support_box_gap'),
                             'lambda':uv['lambda'],'iterations':uv['solver_iterations'],
                             'mask_coverage':{k:len(v) if isinstance(v,list) else v for k,v in cov.items()},
                             'config':cfg})
@@ -251,7 +257,8 @@ def write_current_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda x:f'{100*x:.2f}' if pd.notna(x) else 'n.a.')
     comparison=pd.DataFrame({'dataset':DATASETS})
-    families=['main','asls_pooled_uvarfs','asls_raw','fixed4_raw','all_raw','randomk_raw','asls_random','asls_pca']
+    families=['main','legacy_main','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
+              'asls_pooled_uvarfs','asls_raw','fixed4_raw','all_raw','randomk_raw','asls_random','asls_pca']
     wins={}
     for family in families:
         if family not in macro:
@@ -264,6 +271,8 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         'ASLS_error':d['asls_geometry_error'],'ASLS_feasible':d['asls_feasible'],
         'UVarFS_error':d['uvarfs_geometry_error'],'UVarFS_feasible':d['uvarfs_feasible'],
         'continuous_objective_converged':d['objective_converged'],'continuous_box_gap':d['box_optimality_gap'],
+        'budgeted_box_gap':d.get('budgeted_box_optimality_gap'),
+        'fixed_support_box_gap':d.get('fixed_support_box_gap'),
         'selected_lambda':d['lambda']} for d in data['diagnostics']])
     gate_diagnostic=pd.DataFrame([{'dataset':d['dataset'],
         'consensus_gram_off_diagonal_mean':d['consensus_off_diagonal_mean'],
@@ -303,14 +312,15 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         markdown_table(pairs,pairs.columns.tolist()),'',
         '未提供患者/slide 分组，区间仅以图像为抽样单位；没有多重比较校正或预设非劣界值，不宣称患者级显著性或非劣。','',
         '## 正常训练几何与数值诊断','',markdown_table(diagnostic.round(8),diagnostic.columns.tolist()),'',
-        'ASLS feasible 与 U-VaRFS feasible 分别对应实际预算后表示。若全部 ASLS 选满 6 层且误差仍高于 0.05，则当前 gate 前缀没有找到预算内可行集合；这不证明所有层组合都不可行。连续 gates 接近全开，其微小排序差异不等于成功的自适应稀疏。','',
+        'ASLS feasible 与 U-VaRFS feasible 分别对应实际预算后表示。前缀规则失败不证明全部组合不可行；geometry_search 穷尽整个预算仍失败才说明该采样正常几何下没有可行组合。连续 gates 接近全开，其微小排序差异不等于成功的自适应稀疏。','',
         markdown_table(gate_diagnostic.round(6),gate_diagnostic.columns.tolist()),'',
         'continuous_objective_converged/box gap 对应截断前的完整连续权重，不能用来证明截断后的表示优化充分。完整 lambda path 见 main_lambda_path.csv，lambda=0 只作为诊断，见 zero_lambda_diagnostics.csv，不参与选解。', '',
         '下表是既定 path 最小 lambda 的连续解与实际预算后几何误差，不用于增改 lambda grid。','',
         markdown_table(pd.DataFrame(budget_rows).round(6),list(budget_rows[0])), '',
         '连续解较好、Top-weight 截断后误差增大，说明预算/支持集截断值得单独诊断；连续解也不可行则还可能涉及既定 variability 正则与输入几何。不能仅提高迭代数、放宽容差或用测试结果挑 beta/lambda。', '',
         '## 按原主线实施的修改','',
-        'v7 保留 patch 主输入和原 gate-prefix 主离散规则；正常 Gram 内积 Q 保存为小矩阵，用同一组已学 gates 增加 geometry-search Raw/U-VaRFS 消融。搜索 2–6 层组合，先取可行的最少层，再取 gate 分数最高者；无可行集合时取最小几何误差并明确标记失败。主规则升级另需明确批准，不以本轮 test 标签选择方法。','',
+        f'本轮 ASLS 离散规则为 {data["diagnostics"][0].get("discrete_selection","gate_prefix")}，特征稀疏策略为 {data["diagnostics"][0].get("sparsity_strategy","top_weights")}。规则由运行前配置和用户授权固定，不按 test AUROC 择优。历史 v7 使用 prefix 与组合搜索消融；v8 按用户指令升级组合搜索，并保留 prefix、旧 Top-weight 和 legacy_main 对照。','',
+        'v8 特征剪枝使用原目标的精确单维删除损失，随后在固定支持集重优化同一目标。每个 lambda 保留旧截断候选，只有正常训练目标与几何误差均不变差的候选可被接受。这不保证异常 AUROC/AUPRO 提升；固定支持集 gap 不证明全局最佳稀疏支持集。','',
         'U-VaRFS 目标、beta/lambda、维度与数据预算不变，新增预算后原目标值/box gap 与固定支持集几何下界。H 元素非负，因此在固定支持集上将允许权重设为 1 可得其最小几何误差；这不是全体 256 维组合的最优性证明，不作为新的选解候选。', '',
         '## 压缩与效率','',
         'compression_ratio 包含层与特征两次裁剪，以全层 candidate_dim 为分母；仅 U-VaRFS 压缩需以选中层维度为分母。memory_vector_fp16_mib 是该方法向量容量；matching 时间只包含 NN 与 Top-K，不是全部方法总耗时。fit/memory/eval/peak 是共享整套方法开销，不能重复计作单方法耗时或宣称 backbone 加速。','',
@@ -318,7 +328,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         '## 类别比例','',markdown_table(prevalence.round(6),prevalence.columns.tolist()),'',
         'Image AP 需结合异常比例解释，尤其 X-ray 异常比例很高。','',
         '## 复跑边界','',
-        '新结果写入独立 v7 目录，旧结果不覆盖/混合。服务器先验证 Liver 正常拟合、消融、manifest 和 pixel 指标，再运行全部 BMAD 六数据集。当前工作机缺少真实数据/模型与 CUDA PyTorch，本地数学/CPU fixture 检查不能证明新版真实性能。代码按默认设置提交推送，本报告和所有实验产物只留本地。',''])
+        '新版本结果写入独立版本目录，旧结果不覆盖/混合。服务器先验证 Liver 正常拟合、消融、manifest 和 pixel 指标，再运行全部 BMAD 六数据集。当前工作机缺少真实数据/模型与 CUDA PyTorch，本地数学/CPU fixture 检查不能证明新版真实性能。代码按默认设置提交推送，本报告和所有实验产物只留本地。',''])
     if 'brain' in main.index and 'fixed4_raw' in macro:
         fixed=df[(df.dataset=='brain')&(df.method=='fixed4_raw')].iloc[0]
         lines[5:5]=[f'Brain 是明确短板：Main Image AUROC={100*main.loc["brain","image_auroc"]:.2f}% vs Fixed-4 {100*fixed.image_auroc:.2f}%；Pixel AP={100*main.loc["brain","pixel_auprc"]:.2f}% vs {100*fixed.pixel_auprc:.2f}%。','']

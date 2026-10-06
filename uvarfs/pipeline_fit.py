@@ -118,15 +118,29 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
     last = [extractor.num_layers]
     seed = int(cfg["seed"])
     enabled = set(cfg["methods"])
+    uv_cache={}
+
+    def serializable(value):
+        if isinstance(value,np.ndarray):
+            return value.tolist()
+        if isinstance(value,dict):
+            return {k:serializable(v) for k,v in value.items()}
+        if isinstance(value,list):
+            return [serializable(v) for v in value]
+        return value
+
+    def save_uv(name,layers,result):
+        save_json({'layers':layers,**serializable(result)},dataset_out/f'uvarfs_{name}.json')
 
     def fit_uv(name, layers):
-        x = torch.cat([patches[l] for l in layers], dim=-1)
-        v = torch.cat([variabilities[l] for l in layers], dim=1)
-        print(f"[fit] U-VaRFS {name}: layers={layers} shape={tuple(x.shape)}", flush=True)
-        r = fit_uvarfs(x, v, cfg["uvarfs"], label=f"uvarfs:{name}")
-        serializable={k:(v.tolist() if isinstance(v,np.ndarray) else v) for k,v in r.items()}
-        save_json({"layers":layers,**serializable},
-                  dataset_out / f"uvarfs_{name}.json")
+        key=tuple(layers)
+        if key not in uv_cache:
+            x = torch.cat([patches[l] for l in layers], dim=-1)
+            v = torch.cat([variabilities[l] for l in layers], dim=1)
+            print(f"[fit] U-VaRFS {name}: layers={layers} shape={tuple(x.shape)}", flush=True)
+            uv_cache[key]=fit_uvarfs(x,v,cfg['uvarfs'],label=f'uvarfs:{name}')
+        r=uv_cache[key]
+        save_uv(name,layers,r)
         return r
 
     main_uv = fit_uv("main", selected)
@@ -164,6 +178,17 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
                 if kind=='uvarfs':
                     spec['obj']=main_uv if layers==selected else fit_uv(f'asls_{rule}',layers)
                 specs[name]=spec
+    if 'asls_top_weights_uvarfs' in enabled:
+        obj=main_uv.get('legacy_top_weights',main_uv)
+        save_uv('asls_top_weights',selected,obj)
+        specs['asls_top_weights_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
+            'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
+    if 'legacy_main' in enabled:
+        prefix=reselect_asls(asls,cfg['asls'],'gate_prefix')
+        prefix_uv=fit_uv('asls_gate_prefix',prefix['selected_layers'])
+        obj=prefix_uv.get('legacy_top_weights',prefix_uv)
+        save_uv('legacy_main',prefix['selected_layers'],obj)
+        specs['legacy_main']={'layers':prefix['selected_layers'],'kind':'uvarfs','obj':obj,'asls_geometry':prefix}
     seeds = cfg.get("random_baseline_seeds", [seed])
     if "asls_random" in cfg["methods"]:
         for rs in seeds:

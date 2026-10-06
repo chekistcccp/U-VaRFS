@@ -94,6 +94,11 @@ def select_layer_subset(layers, probabilities, inner_products, cfg, rule='gate_p
 def reselect_asls(result, cfg, rule):
     """Reuse the exact fitted normal geometry and gates for a controlled ablation."""
     saved=result['normal_gram_geometry']
+    constraints={key:cfg.get(key,default) for key,default in
+                 [('min_layers',2),('max_layers',6),('geometry_tolerance',.05)]}
+    if (rule=='gate_prefix' and 'gate_prefix_selection' in result and
+        result.get('discrete_selection_config')==constraints):
+        return {**result['gate_prefix_selection'],'geometry_representation':result['geometry_representation']}
     layers=saved['layers']
     return {**select_layer_subset(layers,[result['probabilities'][str(l)] for l in layers],
                                  saved['inner_products'],cfg,rule),
@@ -205,7 +210,12 @@ def fit_asls(layer_features: dict[int, torch.Tensor], layer_variability: dict[in
                        'representation':'normal_patch_cosine_gram' if representation=='patch' else 'normal_mean_pooled_cosine_gram',
                        'matmul_precision':'highest'},
     }
-    rule=cfg.get('discrete_selection','gate_prefix')
+    result['gate_prefix_selection']={k:result[k] for k in ['selected_layers','geometry_error','feasible','selection_path']}
+    result['discrete_selection_config']={key:cfg.get(key,default) for key,default in
+                                        [('min_layers',2),('max_layers',6),('geometry_tolerance',.05)]}
+    result['gate_prefix_selection'].update(discrete_selection='gate_prefix',evaluated_subsets=len(selection_path),
+        selection_reason='minimum_layers_feasible' if result['feasible'] else 'maximum_prefix_fallback')
+    rule=cfg.get('discrete_selection','geometry_search')
     if rule=='gate_prefix':
         # Retain the original device calculation and stopping rule for main.
         result.update(discrete_selection=rule,evaluated_subsets=len(selection_path),

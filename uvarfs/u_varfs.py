@@ -3,6 +3,7 @@ import math, time
 import torch
 import torch.nn.functional as F
 from .numerics import precise_matmul
+from .sparse_support import refine_budget
 
 
 def _r_scale(H: torch.Tensor, P: torch.Tensor) -> float:
@@ -129,7 +130,7 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
                    **{k:v.cpu().tolist() for k,v in certificate.items()}}
 
 
-def _select_solution(W, H, lambdas, cfg, solver, objective_args=None):
+def _select_solution(W, H, lambdas, cfg, solver, objective_args=None, retained_override=None):
     """Apply the feature budget to EVERY path point before checking geometry.
 
     Feasibility refers to the representation actually used by cosine matching,
@@ -153,6 +154,20 @@ def _select_solution(W, H, lambdas, cfg, solver, objective_args=None):
             active=torch.argsort(W[:,j],descending=True,stable=True)[:k].sort().values
         retained[active,j]=W[active,j]
         indices.append(active)
+    if retained_override is not None:
+        if (retained_override.shape!=W.shape or not torch.isfinite(retained_override).all() or
+            (retained_override<0).any() or (retained_override>1).any()):
+            raise ValueError('invalid budgeted U-VaRFS weights')
+        retained=retained_override
+        indices=[]
+        for j in range(W.shape[1]):
+            active=torch.where(retained[:,j]>0)[0]
+            if len(active)>maxf:
+                raise ValueError('refined support exceeds the common feature budget')
+            if len(active)<minf:
+                order=torch.argsort(W[:,j],descending=True,stable=True)
+                active=torch.cat([active,order[~torch.isin(order,active)][:minf-len(active)]])
+            indices.append(active.sort().values)
     original=1-W
     difference=1-retained
     original_error=torch.sqrt(((original*(H @ original)).sum(0)/base).clamp_min(0)).cpu().tolist()
@@ -197,6 +212,31 @@ def _select_solution(W, H, lambdas, cfg, solver, objective_args=None):
     return chosen,indices[chosen],retained[:,chosen],path
 
 
+def _selection_result(W,selection,lambdas,L,iterations,seconds,strategy):
+    chosen,active,final_w,path=selection
+    point=path[chosen]; lam=lambdas[chosen]
+    return {
+        'lambda':lam,'weights':W[:,chosen].cpu().numpy(),
+        'active':active.cpu().numpy(),'scales':torch.sqrt(final_w[active].clamp_min(0)).cpu().numpy(),
+        'budgeted_weights':final_w.cpu().numpy(),
+        'geometry_error':point['geometry_error'],'continuous_geometry_error':point['continuous_geometry_error'],
+        'feasible':point['feasible'],
+        'selection_reason':'sparsest_feasible' if point['feasible'] else 'minimum_geometry_error_fallback',
+        'lambda_at_grid_boundary':lam in (min(lambdas),max(lambdas)),
+        'lambda_path':path,'solver_converged':point['solver_converged'],
+        'projected_residual':point['projected_residual'],'solver_iterations':iterations,
+        'solver_lipschitz':L,'fit_seconds':seconds,'solver_matmul_precision':'highest',
+        'objective':point['objective'],'box_optimality_gap':point['box_optimality_gap'],
+        'objective_converged':point['objective_converged'],'momentum_restarts':point['restart_counts'],
+        'objective_certificate_scope':'continuous_full_weights','sparsity_strategy':strategy,
+        'fixed_support_geometry_floor':point['fixed_support_geometry_floor'],
+        'fixed_support_can_meet_tolerance':point['fixed_support_can_meet_tolerance'],
+        **{k:v for k,v in point.items() if k.startswith('budgeted_') or k in
+           {'budget_source','legacy_budgeted_objective','legacy_geometry_error','objective_improvement',
+            'geometry_improvement','fixed_support_box_gap','fixed_support_converged','support_refit_iterations'}},
+    }
+
+
 @precise_matmul()
 def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, label: str='uvarfs') -> dict:
     t0=time.time()
@@ -229,64 +269,48 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     tol=float(cfg.get('tol',1e-5))
     check_every=int(cfg.get('check_every',25))
     log_every=int(cfg.get('log_every',50))
+    strategy=cfg.get('sparsity_strategy','objective_prune_refit')
 
     if (not lambdas or any(not math.isfinite(lam) or lam<0 for lam in lambdas)
         or not math.isfinite(beta) or beta<0 or not math.isfinite(tol) or tol<=0
-        or max_iter<1 or check_every<1 or log_every<1):
+        or max_iter<1 or check_every<1 or log_every<1 or strategy not in {'top_weights','objective_prune_refit'}):
         raise ValueError('invalid U-VaRFS path or solver configuration')
     W,L,used_iter,solver=_batched_fista(
         H,P,beta,rscale,lambdas,max_iter,tol,
         check_every=check_every,log_every=log_every,label=label
     )
 
-    chosen,active,final_w,path=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale))
-    lam=lambdas[chosen]
-    w=W[:,chosen]
-    geom_final=path[chosen]['geometry_error']
-    scales=torch.sqrt(final_w[active].clamp_min(0))
-
-    elapsed=time.time()-t0
+    legacy_selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale))
+    legacy=_selection_result(W,legacy_selection,lambdas,L,used_iter,time.time()-t0,'top_weights')
+    selection=legacy_selection
+    if strategy=='objective_prune_refit':
+        retained,support_diagnostics=refine_budget(W,H,P,beta,rscale,lambdas,cfg,label)
+        selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale),retained)
+        for point,diagnostic in zip(selection[3],support_diagnostics):
+            point.update(diagnostic)
+    result=_selection_result(W,selection,lambdas,L,used_iter,time.time()-t0,strategy)
+    if strategy=='objective_prune_refit':
+        result['legacy_top_weights']=legacy
     print(
-        f'[{label}] done: lambda={lam:g} active={len(active)}/{m} '
-        f'geometry_error={geom_final:.4f} iterations={used_iter} elapsed={elapsed:.1f}s',
+        f'[{label}] done: strategy={strategy} lambda={result["lambda"]:g} active={len(result["active"])}/{m} '
+        f'geometry_error={result["geometry_error"]:.4f} iterations={used_iter} elapsed={result["fit_seconds"]:.1f}s',
         flush=True
     )
-    if not path[chosen]['feasible']:
+    if not result['feasible']:
         print(f'[{label}] fallback: no budgeted representation meets geometry tolerance={tol_geom:g}',flush=True)
-    if not path[chosen]['solver_converged']:
-        print(f'[{label}] selected solution reached iteration limit; residual={path[chosen]["projected_residual"]:.3e}',flush=True)
-    result={
-        'lambda':lam,
-        'weights':w.cpu().numpy(),
-        'active':active.cpu().numpy(),
-        'scales':scales.cpu().numpy(),
-        'geometry_error':geom_final,
-        'continuous_geometry_error':path[chosen]['continuous_geometry_error'],
-        'feasible':path[chosen]['feasible'],
-        'selection_reason':'sparsest_feasible' if path[chosen]['feasible'] else 'minimum_geometry_error_fallback',
-        'lambda_at_grid_boundary':lam in (min(lambdas),max(lambdas)),
-        'lambda_path':path,
-        'solver_converged':path[chosen]['solver_converged'],
-        'projected_residual':path[chosen]['projected_residual'],
-        'solver_iterations':used_iter,
-        'solver_lipschitz':L,
-        'fit_seconds':elapsed,
-        'solver_matmul_precision':'highest',
-        'objective':path[chosen]['objective'],
-        'box_optimality_gap':path[chosen]['box_optimality_gap'],
-        'objective_converged':path[chosen]['objective_converged'],
-        'momentum_restarts':path[chosen]['restart_counts'],
-        'objective_certificate_scope':'continuous_full_weights',
-        'fixed_support_geometry_floor':path[chosen]['fixed_support_geometry_floor'],
-        'fixed_support_can_meet_tolerance':path[chosen]['fixed_support_can_meet_tolerance'],
-        **{k:v for k,v in path[chosen].items() if k.startswith('budgeted_')},
-    }
+    if not result['solver_converged']:
+        print(f'[{label}] continuous solve reached iteration limit; residual={result["projected_residual"]:.3e}',flush=True)
     # Diagnostic only: never extend the selected lambda path or tune beta.
     if not result['feasible'] and cfg.get('diagnose_infeasible',False):
         diagnostic_W,_,_,diagnostic_solver=_batched_fista(
             H,P,beta,rscale,[0.0],max_iter,tol,check_every,log_every,
             label=f'{label}:lambda0-diagnostic')
         _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale))
+        legacy['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
+        if strategy=='objective_prune_refit':
+            retained,diagnostics=refine_budget(diagnostic_W,H,P,beta,rscale,[0.0],cfg,f'{label}:lambda0')
+            _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale),retained)
+            diagnostic_path[0].update(diagnostics[0])
         result['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
     return result
 

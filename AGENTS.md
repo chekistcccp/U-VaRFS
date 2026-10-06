@@ -233,8 +233,9 @@ representation geometry preservation
 - 每层 variability；
 - sigmoid continuous layer probability；
 - Adam 优化；
-- 最后按 gate probability 排序；
-- 选择满足 geometry tolerance 的最小层集合。
+- 在原 2–6 层预算内搜索正常几何可行的组合（v8 用户授权的离散规则升级）；
+- 选择满足 geometry tolerance 的最少层，再以已学 gate 总分选择组合；
+- 旧 gate-prefix 规则保留为同轮消融，输出层仍按 gate probability 排序拼接。
 
 默认复用已有 normal fit patches（256 图像 × 16 patches，实际数量记录在 manifest），通过 layer-Gram 内积等价计算误差。Mean-pooled geometry 保留为 `asls_pooled_raw` / `asls_pooled_uvarfs` 消融，不能根据 test AUROC 在两种输入之间择优选择主方法。
 
@@ -396,10 +397,14 @@ Rw=P(P^Tw)
 
 因此无需显式构造大的 (R=PP^T)。
 
+v8 在连续 path 后使用原目标的精确单维删除损失做预算内剪枝，并对固定支持集重优化同一目标；旧 Top-weight 截断保留消融。每个 lambda 只接受原正常训练目标与几何误差均不变差的候选。这是用户授权的稀疏求解算法升级，不是新损失函数；固定支持集收敛也不证明全局稀疏最优。完整定义和保护条件见第 32 节。
+
 当前默认：
 
 ```yaml
 beta: 0.002
+sparsity_strategy: objective_prune_refit
+support_refit_max_iter: 2000
 lambda_grid:
   [0.05, 0.02, 0.01, 0.005, 0.002, 0.001,
    0.0005, 0.0002, 0.0001, 0.00005,
@@ -799,7 +804,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v7-geometry-audit
+gpu-eval-v8-objective-sparsity
 ```
 
 原因：
@@ -917,7 +922,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v7-geometry-audit
+experiment_version = gpu-eval-v8-objective-sparsity
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1243,7 +1248,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 31. v7 正常几何与预算诊断（当前开发状态）
+# 31. v7 正常几何与预算诊断（历史开发记录）
 
 当前版本 `gpu-eval-v7-geometry-audit`；新输出目录 `results/gpu-eval-v7-geometry-audit/`。开发与复跑说明见 [GEOMETRY_AUDIT.md](GEOMETRY_AUDIT.md)。实验分析按第 28 节仅保留本地，新结果不得覆盖旧目录。
 
@@ -1254,3 +1259,20 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 分析脚本重算 AUROC/AP、mean/sample SD、配对图像区间与来源/预算审计，拒绝覆盖原产物或已跟踪的历史报告。实际报告/图表仍在忽略目录，仅代码和开发文档同步。
 
 50 项本地数学/CPU 流程回归检查、shell 语法与 diff 检查通过；真实数据、模型与 CUDA PyTorch 不在本机，未验证 v7 性能。服务器先验证 Liver，再 BMAD 六数据集：`SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`。
+
+---
+
+# 32. 2026-10-07 用户授权升级稀疏方式（当前开发状态）
+
+用户明确要求：**“能否换一种性能更好的稀疏方式？再改进一下”**。据此升级主稀疏算法，无需再次确认相同升级；第 31 节的待批准状态已由本次指令取代。
+
+当前版本 `gpu-eval-v8-objective-sparsity`；输出 `results/gpu-eval-v8-objective-sparsity/`。算法、方法变更检查与复跑边界见 [OBJECTIVE_SPARSITY_UPGRADE.md](OBJECTIVE_SPARSITY_UPGRADE.md)。
+
+- Main 为已批准的 normal patch geometry + `geometry_search` ASLS + 原目标下 `objective_prune_refit` U-VaRFS。ASLS sigmoid/Adam/loss 保持，升级其离散支持集搜索；U-VaRFS 数学目标保持，升级其预算内支持集与权重求解。不能将主算法变化描述为仅工程等价优化，也不能声称已验证异常性能提升。
+- 完整正常几何、原目标的精确单维删除损失与固定支持集重优化均只使用正常训练数据。beta、lambda path、层/特征预算、几何容差、fit/variability/memory 数据预算、Frozen backbone、cosine 1-NN 和评价定义保持。
+- 所有新版 U-VaRFS 对照使用相同支持集 refit 最大迭代数。固定支持集必须保留线性目标 `(H1)_S`、原 P/rscale；不能用 `H_SS 1` 重定义问题。没有 inverse-Hessian OBS、Hard-Concrete 或异常监督。
+- 每个 lambda 保留旧截断候选，只有原目标与训练几何误差均不变差且不破坏最小非零维度约束的候选才可接受。最终仍按原 label-free 规则选解；固定支持集收敛不证明全局最佳稀疏支持集或异常性能提升。
+- 原 32 方法保留，新增 `asls_gate_prefix_raw`、`asls_gate_prefix_uvarfs`、`asls_top_weights_uvarfs`、`legacy_main`，共 36 方法。旧层规则、旧特征规则、旧整体流程都可同轮比较；缓存同一有序层输入的连续求解，统一 memory 抽样。
+- 实际 detector 权重与连续权重、预算后与固定支持集证书分别保存。旧结果不可覆盖/混合；结果和分析继续仅本地，代码改进按第 28 节提交推送。
+
+60 项本地 CPU 检查通过，1 项 CUDA 对照因本机没有 runtime 跳过。真实数据/模型与 CUDA PyTorch 不在本机，未验证 v8 真实性能；先服务器 Liver，再 BMAD 全六。

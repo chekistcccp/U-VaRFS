@@ -297,12 +297,18 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     extractor = TinyFrozenExtractor()
     specs = fit_method_specs(extractor,train,cfg,output)
     assert sorted(specs) == expected_method_names(cfg)
-    assert len(specs) == 32
+    assert len(specs) == 36
     fitted=json.loads((output/'asls.json').read_text())
     assert fitted['geometry_representation']==geometry_representation
     assert fitted['diagnostics']['normal_geometry_samples']==(16 if geometry_representation=='patch' else 4)
     assert specs['main']['layers']==fitted['selected_layers']
-    assert fitted['discrete_selection']=='gate_prefix'
+    assert fitted['discrete_selection']=='geometry_search'
+    prefix=json.loads((output/'asls_gate_prefix.json').read_text())
+    assert specs['legacy_main']['layers']==prefix['selected_layers']
+    assert specs['legacy_main']['obj']['sparsity_strategy']=='top_weights'
+    assert specs['asls_top_weights_uvarfs']['layers']==specs['main']['layers']
+    assert specs['asls_top_weights_uvarfs']['obj']['sparsity_strategy']=='top_weights'
+    assert specs['main']['obj']['sparsity_strategy']=='objective_prune_refit'
     search=json.loads((output/'asls_geometry_search.json').read_text())
     for kind in ['raw','uvarfs']:
         assert specs[f'asls_geometry_search_{kind}']['layers']==search['selected_layers']
@@ -311,6 +317,9 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     assert uv['objective_certificate_scope']=='continuous_full_weights'
     assert 'budgeted_box_optimality_gap' in uv
     assert uv['fixed_support_geometry_floor']<=uv['geometry_error']+1e-6
+    for point,old in zip(uv['lambda_path'],uv['legacy_top_weights']['lambda_path']):
+        assert point['budgeted_objective']<=old['budgeted_objective']+1e-7
+        assert point['geometry_error']<=old['geometry_error']+1e-7
     assert specs['main']['asls_geometry']['geometry_representation']==geometry_representation
     assert json.loads((output/'uvarfs_main.json').read_text())['layers']==fitted['selected_layers']
     comparison_mode='pooled' if geometry_representation=='patch' else 'patch'
