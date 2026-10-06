@@ -1,3 +1,4 @@
+> **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
 > **数据入口已固定为 `data/archives/`**  
 > 你只需把自行下载的 BMAD 原始压缩包全部放入该目录，不需要手工解压、改名或整理内部目录。  
