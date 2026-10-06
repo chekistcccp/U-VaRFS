@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, time
+import argparse, json, time, subprocess
 from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
 
-from uvarfs.utils import load_config, set_seed, ensure_dir
-from uvarfs.data import discover_bmad_roots, scan_split
+from uvarfs.utils import load_config, set_seed, ensure_dir, save_json
+from uvarfs.data import discover_bmad_roots, scan_split, mask_coverage, validate_pixel_masks, PIXEL_DATASETS
 from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 
-EXPERIMENT_VERSION='gpu-eval-v3-batched-uvarfs'
+from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
+                             code_fingerprint,data_fingerprint,expected_method_names,completed_result_compatible)
 
 
 def _append_layer_rows(layer_rows,out,dname,num_layers):
@@ -44,6 +45,7 @@ def main():
     ap.add_argument('--config',default='configs/default.yaml')
     ap.add_argument('--dataset',default='all',help='all or comma-separated processed dataset names')
     ap.add_argument('--force',action='store_true',help='rerun datasets even if results/<dataset>/metrics.csv already exists')
+    ap.add_argument('--check-data-only',action='store_true',help='validate normal train, all requested datasets and test masks without loading DINOv3')
     args=ap.parse_args()
 
     cfg=load_config(args.config)
@@ -56,24 +58,59 @@ def main():
     if not roots:
         raise SystemExit(f'No processed BMAD datasets found under {processed}. Run scripts/prepare_bmad.py first.')
 
-    wanted=None if args.dataset=='all' else {x.strip().lower() for x in args.dataset.split(',') if x.strip()}
+    wanted=BMAD_DATASETS if args.dataset=='all' else {x.strip().lower() for x in args.dataset.split(',') if x.strip()}
+    if not wanted:
+        ap.error('--dataset must contain at least one dataset name')
+    missing=wanted-set(roots)
+    if missing:
+        raise SystemExit(f'Missing requested BMAD datasets: {sorted(missing)}. The all-six protocol must not silently skip datasets.')
+    if args.check_data_only:
+        for dname,droot in sorted(roots.items()):
+            if dname.lower() not in wanted:
+                continue
+            train=scan_split(droot,'train',dname)
+            test=scan_split(droot,'test',dname)
+            if not train or not test or any(s.label!=0 for s in train):
+                raise ValueError(f'{dname}: invalid normal-reference train or empty test split')
+            out=ensure_dir(res/dname)
+            save_json(mask_coverage(test),out/'mask_coverage.json')
+            coverage=validate_pixel_masks(test,dname)
+            print(json.dumps({'dataset':dname,'normal_train':len(train),**coverage},ensure_ascii=False),flush=True)
+        return
+    repo=Path(__file__).resolve().parents[1]
+    code_hash=code_fingerprint(repo)
+    git_head=subprocess.run(['git','rev-parse','HEAD'],cwd=repo,capture_output=True,text=True).stdout.strip()
     extractor=DINOv3Extractor(model_dir,int(cfg['model']['input_size']),cfg['model']['amp'])
     all_rows,layer_rows=[],[]
     candidate_dim=extractor.num_layers*extractor.hidden_dim
     resume=bool(cfg.get('eval',{}).get('resume_completed',True)) and not args.force
 
     for dname,droot in sorted(roots.items()):
-        if wanted and dname.lower() not in wanted:
+        if dname.lower() not in wanted:
             continue
         out=ensure_dir(res/dname)
         metrics_path=out/'metrics.csv'
+        train=scan_split(droot,'train',dname)
+        test=scan_split(droot,'test',dname)
+        if not train or not test or any(s.label!=0 for s in train):
+            raise ValueError(f'{dname}: train must be nonempty normal-reference data and test must be nonempty')
+        save_json(mask_coverage(test),out/'mask_coverage.json')
+        validate_pixel_masks(test,dname)
+        data_hash=data_fingerprint(train,test)
 
         if resume and metrics_path.exists():
             try:
                 existing=pd.read_csv(metrics_path)
             except Exception:
                 existing=pd.DataFrame()
-            compatible=(not existing.empty and 'method' in existing.columns and 'experiment_version' in existing.columns and existing['experiment_version'].astype(str).eq(EXPERIMENT_VERSION).all())
+            try:
+                metadata=json.loads((out/'run_metadata.json').read_text(encoding='utf-8'))
+                progress=json.loads((out/'eval_progress.json').read_text(encoding='utf-8'))
+            except (OSError,ValueError):
+                metadata,progress={},{}
+            compatible=completed_result_compatible(existing,metadata,progress,cfg,code_hash,dname in PIXEL_DATASETS,data_hash)
+            compatible=compatible and all((out/name).is_file() for name in (
+                'asls.json','fit_manifest.json','memory_manifest.json','image_predictions.csv'))
             if compatible:
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
@@ -81,11 +118,16 @@ def main():
                 _save_partial(all_rows,layer_rows,res)
                 continue
 
-        train=scan_split(droot,'train',dname)
-        test=scan_split(droot,'test',dname)
-        if not train or not test:
-            print(f'[skip] {dname}: incomplete split',flush=True)
-            continue
+        save_json({'experiment_version':EXPERIMENT_VERSION,'config':cfg,
+                   'config_fingerprint':config_fingerprint(cfg),'code_fingerprint':code_hash,
+                   'data_fingerprint':data_hash,
+                   'git_head':git_head,'dataset':dname,'train_images':len(train),'test_images':len(test),
+                   'expected_methods':expected_method_names(cfg),
+                   'backbone':{'num_layers':extractor.num_layers,'hidden_dim':extractor.hidden_dim,
+                               'patch_size':extractor.patch_size,'prefix_tokens':extractor.num_prefix},
+                   'torch_version':torch.__version__,'cuda_version':torch.version.cuda,
+                   'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
+                  out/'run_metadata.json')
 
         print(f'\n=== {dname}: train={len(train)} test={len(test)} ===',flush=True)
         if torch.cuda.is_available():
@@ -95,6 +137,8 @@ def main():
         t=time.time()
         print(f'[{dname}] stage 1/3: fit ASLS/U-VaRFS',flush=True)
         specs=fit_method_specs(extractor,train,cfg,out)
+        if sorted(specs)!=expected_method_names(cfg):
+            raise ValueError(f'{dname}: fitted methods do not match the configured protocol')
         fit_s=time.time()-t
         print(f'[{dname}] fit complete in {fit_s/60:.1f} min; methods={len(specs)}',flush=True)
 
@@ -117,6 +161,7 @@ def main():
         print(f'[{dname}] evaluation complete in {eval_s/60:.1f} min',flush=True)
 
         peak=torch.cuda.max_memory_allocated()/1024**3 if torch.cuda.is_available() else 0.0
+        asls_info=json.loads((out/'asls.json').read_text(encoding='utf-8'))
         for r in rows:
             spec=specs[r['method']]
             dim=int(memories[r['method']].shape[1])
@@ -129,7 +174,14 @@ def main():
                 feature_dim=dim,candidate_dim=candidate_dim,
                 compression_ratio=1.0-dim/max(candidate_dim,1),
                 memory_size=len(memories[r['method']]),experiment_version=EXPERIMENT_VERSION,
+                timing_scope='shared_dataset_all_methods',
+                asls_geometry_feasible=asls_info.get('feasible'),
             )
+            if spec['kind']=='uvarfs':
+                r.update(uvarfs_geometry_error=spec['obj']['geometry_error'],
+                         uvarfs_geometry_feasible=spec['obj']['feasible'],
+                         uvarfs_solver_converged=spec['obj']['solver_converged'],
+                         uvarfs_selected_lambda=spec['obj']['lambda'])
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)

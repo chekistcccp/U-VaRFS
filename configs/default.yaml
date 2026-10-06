@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results
+results_dir: results/gpu-eval-v4-protocol-fixes
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
@@ -17,6 +17,7 @@ data:
   fit_images: 256
   variability_images: 96
   patches_per_image: 16
+  variability_epsilon: 1.0e-6
   memory_size: 20000
   memory_images: 1024
   memory_patches_per_image: 32
@@ -28,6 +29,7 @@ asls:
   sparsity_weight: 0.02
   steps: 300
   lr: 0.05
+  log_every: 50
   min_layers: 2
   max_layers: 6
 
@@ -35,7 +37,8 @@ uvarfs:
   beta: 0.002
   lambda_grid: [0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001, 0.00005, 0.00002, 0.00001, 0.000005, 0.000002, 0.000001]
   geometry_tolerance: 0.05
-  max_iter: 400
+  # Numerical solve budget; objective, lambda path and data budgets are unchanged.
+  max_iter: 2000
   tol: 1.0e-5
   check_every: 25
   log_every: 50
@@ -54,6 +57,8 @@ methods:
   - fixed4_uvarfs
   - all_uvarfs
   - random4_uvarfs
+  - randomk_raw
+  - randomk_uvarfs
 
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]
 
@@ -70,6 +75,7 @@ eval:
   bootstrap_samples: 1000
   save_heatmaps: true
   max_heatmaps_per_dataset: 12
+  heatmap_methods: [all_raw, main]
   faiss_gpu: true
-  faiss_exact: false
+  faiss_exact: true
   faiss_nprobe: 16

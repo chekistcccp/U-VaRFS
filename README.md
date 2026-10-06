@@ -1,4 +1,7 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
+> **当前实现版本：`gpu-eval-v4-protocol-fixes`**。原始研究主线保持不变；修正统计、预算后几何检查、mask 评价与实验追溯。新版运行步骤和验证边界见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。旧版回传结果保留在 `results/`，新版使用独立目录。
+
+已归档的 v3 回传结果与分析见 [六数据集实验分析](reports/2026-10-06-v3-analysis/analysis.md)。项目默认在每轮改进完成并检查通过后提交、推送相关修改与报告，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
 > **数据入口已固定为 `data/archives/`**  
 > 你只需把自行下载的 BMAD 原始压缩包全部放入该目录，不需要手工解压、改名或整理内部目录。  
@@ -199,53 +202,45 @@ K_l = F_lF_l^T
 K_C = \frac{1}{L}\sum_{l=1}^{L} K_l
 ]
 
-主实验使用平均 consensus；element-wise median 作为稳健性消融。
+当前实现对 normal-reference 图像的 mean-pooled representation 构造每层 cosine Gram，并使用全层平均 consensus。
 
 ### 6.3 Layer variability
 
 对于正常图像 (x) 和轻微扰动 (T_v(x))：
 
 [
-V_l =
-\mathbb{E}_{x,v}
-\left[
-d\left(F_l(x), F_l(T_v(x))\right)
-\right]
+u_v^j = \frac{\mathbb{E}_i[(f_j(x_i)-f_j(T_v(x_i)))^2]}{\operatorname{Var}_i(f_j(x_i))+\epsilon},
+\qquad V_l = \operatorname{Mean}_{v,j\in l}(u_v^j)
 ]
 
-(d) 默认使用 cosine distance。
+当前实现使用全体采样正常 patch 的总体方差与扰动平方差均值，包含 batch 之间的方差；不对 batch 内的比值取平均。
 
 低 (V_l) 表示该层对 nuisance perturbation 更稳定。
 
 ### 6.4 稀疏层选择
 
-每层设置 gate：
+每层设置 continuous gate probability：
 
 [
-g_l \in \{0,1\}
+p_l = \operatorname{sigmoid}(a_l)
 ]
 
-训练阶段使用 Hard-Concrete / (L_0) relaxation，使 gate 可优化；测试阶段 gate 固定为确定的 0/1。
+当前代码使用 sigmoid continuous layer gates 与 Adam。它不是 Hard-Concrete 或严格的 L0 relaxation。最终按概率排序，再在预设层数预算内选取满足 geometry tolerance 的最小前缀集合，检测阶段仅使用选中的层。
 
 目标函数：
 
 [
 \mathcal{L}_{layer} =
-D\left(
-K_C,
-\sum_l g_l K_l
-\right)
-+
-\gamma \sum_l p_l V_l
-+
-\rho \sum_l P(g_l \neq 0)
+\frac{\|L^{-1}\sum_l p_l K_l-K_C\|_F}{\|K_C\|_F}
++\gamma\frac{\sum_l p_l\widetilde V_l}{\sum_l p_l}
++\rho L^{-1}\sum_l p_l
 ]
 
-其中：
+其中 \(\widetilde V_l\) 是 normal-only variability 的 min-max 归一化值：
 
 - 第一项：保持 DINOv3 hierarchy 的几何结构；
 - 第二项：抑制扰动敏感层；
-- 第三项：(L_0) 层级稀疏。
+- 第三项：continuous gate sparsity。
 
 ### 6.5 无标签选择策略
 
@@ -259,9 +254,9 @@ K_C,
 \frac{\|K_C-K_g\|_F}{\|K_C\|_F} \le 0.05
 ]
 
-即保持至少约 95% 的几何信息。
+该条件表示相对 Frobenius 几何误差不超过 0.05，不等同于解释方差或“保留 95% 信息”。若层数预算内无可行前缀，当前实现返回预算上限前缀并明确记录 `feasible=false`。
 
-建议主结果预计保留约 **3–5 层**，但不强制固定层数。
+默认允许 2–6 层，实际层数由正常数据决定。记录 gate 范围、梯度和选层几何误差，以诊断饱和与几何退化。
 
 ---
 
@@ -583,7 +578,7 @@ Random-K：
 4. Random-K；
 5. 仅 geometry preservation；
 6. geometry + variability；
-7. **geometry + variability + (L_0) sparsity**。
+7. **geometry + variability + continuous gate sparsity**。
 
 ### B. U-VaRFS
 
@@ -818,7 +813,7 @@ RandomLayer+RandomFeature
 
 ### Day 3–4：基础异常检测
 - normal memory；
-- FAISS kNN；
+- exact cosine 1-NN（CUDA Torch；FAISS fallback）；
 - image-level AUROC；
 - pixel anomaly map；
 - Last / Fixed-4 / All-layer baselines。
@@ -826,7 +821,7 @@ RandomLayer+RandomFeature
 ### Day 5–6：ASLS
 - layer geometry；
 - perturbation variability；
-- Hard-Concrete / (L_0) layer gates；
+- sigmoid continuous layer gates + geometry-constrained discrete selection；
 - Random-K 对照。
 
 ### Day 7–8：U-VaRFS

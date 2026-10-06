@@ -1,6 +1,5 @@
 from __future__ import annotations
 import math, time
-import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -31,6 +30,15 @@ def _power_lipschitz(H: torch.Tensor, P: torch.Tensor, beta: float, rscale: floa
     return float((x @ ax).abs().item())+1e-6
 
 
+def _lipschitz_bound(H, P, beta, rscale):
+    """Guaranteed spectral upper bound; avoids an underestimated power iterate."""
+    rows = H.abs().sum(1)
+    if P.numel():
+        absolute = P.abs()
+        rows = rows + 2.0 * beta * rscale * (absolute @ absolute.sum(0))
+    return max(float(rows.max().item()) * (1.0 + 1e-6), 1e-12)
+
+
 @torch.inference_mode(False)
 def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, log_every=50, label='uvarfs'):
     """Solve all lambda candidates in parallel.
@@ -41,19 +49,20 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
     """
     m=H.shape[0]
     lams=torch.as_tensor(lambdas,device=H.device,dtype=H.dtype).reshape(1,-1)
-    L=_power_lipschitz(H,P,beta,rscale)
+    L=_lipschitz_bound(H,P,beta,rscale)
     W=torch.ones((m,len(lambdas)),device=H.device,dtype=H.dtype)
     Y=W.clone()
     t=1.0
-    ones=torch.ones_like(W)
+    target=H.sum(1,keepdim=True)
     t0=time.time()
+    residual = torch.full((len(lambdas),),float('inf'),device=H.device)
+    relative = residual.clone()
 
     for it in range(1,max_iter+1):
-        grad=H @ (Y-ones)
-        if P.numel():
-            grad=grad + (2.0*beta*rscale) * (P @ (P.T @ Y))
+        grad=_apply_A(Y,H,P,beta,rscale)-target
         Z=Y-grad/L
-        Wn=torch.clamp(torch.sign(Z)*torch.relu(Z.abs()-lams/L),0.0,1.0)
+        # On [0,1], the L1 proximal operator is a positive threshold + box projection.
+        Wn=torch.clamp(Z-lams/L,0.0,1.0)
         tn=0.5*(1.0+math.sqrt(1.0+4.0*t*t))
         Y=Wn+((t-1.0)/tn)*(Wn-W)
 
@@ -63,10 +72,15 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
         rel_val=None
         if need_check or need_log:
             # One synchronization every check_every iterations instead of every iteration.
-            rel=(torch.linalg.vector_norm(Wn-W,dim=0)/
+            relative=(torch.linalg.vector_norm(Wn-W,dim=0)/
                  torch.linalg.vector_norm(W,dim=0).clamp_min(1e-8))
-            rel_val=float(rel.max().item())
-            if need_check and rel_val < tol:
+            gradient=_apply_A(Wn,H,P,beta,rscale)-target
+            projected=torch.clamp(Wn-(gradient+lams)/L,0.0,1.0)
+            residual=(torch.linalg.vector_norm(Wn-projected,dim=0)/
+                      torch.linalg.vector_norm(Wn,dim=0).clamp_min(1.0))
+            rel_val=float(relative.max().item())
+            residual_val=float(residual.max().item())
+            if need_check and max(rel_val,residual_val) < tol:
                 stop=True
         W,t=Wn,tn
 
@@ -76,17 +90,65 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
             amin=int(active.min().item()); amax=int(active.max().item())
             print(
                 f'[{label}] iter={it}/{max_iter} max_rel={rel_val:.3e} '
-                f'active={amin}-{amax} elapsed={elapsed:.1f}s',
+                f'max_projected_residual={residual_val:.3e} active={amin}-{amax} elapsed={elapsed:.1f}s',
                 flush=True
             )
         if stop:
             print(f'[{label}] converged at iter={it}, max_rel={rel_val:.3e}',flush=True)
             break
-    return W,L,it
+    return W,L,it,{'relative_change':relative.cpu().tolist(),
+                   'projected_residual':residual.cpu().tolist(),
+                   'converged':((relative<tol)&(residual<tol)).cpu().tolist()}
+
+
+def _select_solution(W, H, lambdas, cfg, solver):
+    """Apply the feature budget to EVERY path point before checking geometry.
+
+    Feasibility refers to the representation actually used by cosine matching,
+    not the untruncated continuous weights. No anomaly labels enter selection.
+    """
+    m=W.shape[0]
+    minf=min(int(cfg.get('min_features',32)),m)
+    maxf=min(int(cfg.get('max_features',256)),m)
+    if not 1 <= minf <= maxf:
+        raise ValueError('feature budgets must satisfy 1 <= min_features <= max_features')
+    threshold=float(cfg.get('active_threshold',1e-4))
+    tolerance=float(cfg.get('geometry_tolerance',0.05))
+    base=H.sum().clamp_min(1e-12)
+    retained=torch.zeros_like(W)
+    indices=[]
+    counts=(W>threshold).sum(0).cpu().tolist()
+    for j in range(W.shape[1]):
+        active=torch.where(W[:,j]>threshold)[0]
+        if len(active)>maxf or len(active)<minf:
+            k=maxf if len(active)>maxf else minf
+            active=torch.argsort(W[:,j],descending=True,stable=True)[:k].sort().values
+        retained[active,j]=W[active,j]
+        indices.append(active)
+    original=1-W
+    difference=1-retained
+    original_error=torch.sqrt(((original*(H @ original)).sum(0)/base).clamp_min(0)).cpu().tolist()
+    errors=torch.sqrt(((difference*(H @ difference)).sum(0)/base).clamp_min(0)).cpu().tolist()
+    nonzero=(retained>0).sum(0).cpu().tolist()
+    path=[]
+    for j,lam in enumerate(lambdas):
+        path.append({'lambda':lam,'continuous_active_features':counts[j],
+                     'retained_features':len(indices[j]),'nonzero_features':nonzero[j],
+                     'continuous_geometry_error':original_error[j],
+                     'geometry_error':errors[j],
+                     'feasible':errors[j]<=tolerance and nonzero[j]>=minf,
+                     'relative_change':solver['relative_change'][j],
+                     'projected_residual':solver['projected_residual'][j],
+                     'solver_converged':bool(solver['converged'][j])})
+    feasible=[j for j,p in enumerate(path) if p['feasible']]
+    chosen=min(feasible,key=lambda j:(len(indices[j]),errors[j])) if feasible else min(range(len(path)),key=lambda j:errors[j])
+    return chosen,indices[chosen],retained[:,chosen],path
 
 
 def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, label: str='uvarfs') -> dict:
     t0=time.time()
+    if X.ndim!=2 or X.shape[0]<2 or X.shape[1]<1 or not torch.isfinite(X).all():
+        raise ValueError('U-VaRFS requires finite normal-reference features with at least two samples')
     X=F.normalize(X.float(),dim=1)
     n=max(X.shape[0],1)
     m=X.shape[1]
@@ -100,7 +162,9 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     H=H/hscale
     del G
 
-    P=variability_vectors.float().T  # M x V
+    P=variability_vectors.to(device=X.device,dtype=X.dtype).T  # M x V
+    if P.ndim!=2 or P.shape[0]!=m or not torch.isfinite(P).all() or (P<0).any():
+        raise ValueError('variability must be a finite nonnegative V x M matrix')
     if P.numel():
         P=P/(P.norm(dim=0,keepdim=True)+1e-8)
 
@@ -108,47 +172,25 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     rscale=_r_scale(H,P)
     lambdas=[float(x) for x in cfg.get('lambda_grid',[0.1,0.05,0.01,0.005,0.001])]
     tol_geom=float(cfg.get('geometry_tolerance',0.05))
-    active_thr=float(cfg.get('active_threshold',1e-4))
-    minf=int(cfg.get('min_features',32))
-    maxf=int(cfg.get('max_features',256))
     max_iter=int(cfg.get('max_iter',400))
     tol=float(cfg.get('tol',1e-5))
     check_every=int(cfg.get('check_every',25))
     log_every=int(cfg.get('log_every',50))
 
-    base=float(torch.ones(H.shape[0],device=H.device) @ H @ torch.ones(H.shape[0],device=H.device))
-    base=max(base,1e-12)
-
-    W,L,used_iter=_batched_fista(
+    if (not lambdas or any(not math.isfinite(lam) or lam<0 for lam in lambdas)
+        or not math.isfinite(beta) or beta<0 or not math.isfinite(tol) or tol<=0
+        or max_iter<1 or check_every<1 or log_every<1):
+        raise ValueError('invalid U-VaRFS path or solver configuration')
+    W,L,used_iter,solver=_batched_fista(
         H,P,beta,rscale,lambdas,max_iter,tol,
         check_every=check_every,log_every=log_every,label=label
     )
 
-    # Evaluate all lambda candidates in one matrix operation.
-    D=1.0-W
-    HD=H @ D
-    geom=torch.sqrt(torch.clamp((D*HD).sum(dim=0)/base,min=0.0))
-    active_counts=(W>active_thr).sum(dim=0)
-
-    candidates=[]
-    for j,lam in enumerate(lambdas):
-        active=torch.where(W[:,j]>active_thr)[0]
-        candidates.append((lam,W[:,j].detach().clone(),active.detach().clone(),float(geom[j].item())))
-
-    feasible=[c for c in candidates if c[3] <= tol_geom and len(c[2]) >= minf]
-    chosen=min(feasible,key=lambda c:len(c[2])) if feasible else min(candidates,key=lambda c:c[3])
-    lam,w,active,_=chosen
-
-    if len(active)>maxf:
-        active=torch.topk(w,k=maxf).indices.sort().values
-    if len(active)<minf:
-        active=torch.topk(w,k=min(minf,len(w))).indices.sort().values
-
-    final_w=torch.zeros_like(w)
-    final_w[active]=w[active]
-    diff=1.0-final_w
-    geom_final=math.sqrt(max(float(diff @ H @ diff),0.0)/base)
-    scales=torch.sqrt(w[active].clamp_min(1e-8))
+    chosen,active,final_w,path=_select_solution(W,H,lambdas,cfg,solver)
+    lam=lambdas[chosen]
+    w=W[:,chosen]
+    geom_final=path[chosen]['geometry_error']
+    scales=torch.sqrt(final_w[active].clamp_min(0))
 
     elapsed=time.time()-t0
     print(
@@ -156,12 +198,23 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
         f'geometry_error={geom_final:.4f} iterations={used_iter} elapsed={elapsed:.1f}s',
         flush=True
     )
+    if not path[chosen]['feasible']:
+        print(f'[{label}] fallback: no budgeted representation meets geometry tolerance={tol_geom:g}',flush=True)
+    if not path[chosen]['solver_converged']:
+        print(f'[{label}] selected solution reached iteration limit; residual={path[chosen]["projected_residual"]:.3e}',flush=True)
     return {
         'lambda':lam,
         'weights':w.cpu().numpy(),
         'active':active.cpu().numpy(),
         'scales':scales.cpu().numpy(),
         'geometry_error':geom_final,
+        'continuous_geometry_error':path[chosen]['continuous_geometry_error'],
+        'feasible':path[chosen]['feasible'],
+        'selection_reason':'sparsest_feasible' if path[chosen]['feasible'] else 'minimum_geometry_error_fallback',
+        'lambda_at_grid_boundary':lam in (min(lambdas),max(lambdas)),
+        'lambda_path':path,
+        'solver_converged':path[chosen]['solver_converged'],
+        'projected_residual':path[chosen]['projected_residual'],
         'solver_iterations':used_iter,
         'solver_lipschitz':L,
         'fit_seconds':elapsed,

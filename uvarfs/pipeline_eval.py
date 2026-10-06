@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
-from .data import BMADDataset
+from .data import BMADDataset, validate_pixel_masks
 from .memory import Reservoir, make_index
 from .metrics import safe_auc, safe_ap, bootstrap_auc, PixelAccumulator
 from .transforms import concat_layers, apply_pca
@@ -23,7 +23,7 @@ def loader(samples,cfg,with_mask=False,indices=None,test=False):
     return DataLoader(
         ds,batch_size=bs,shuffle=False,
         num_workers=int(cfg['model']['num_workers']),
-        pin_memory=True,
+        pin_memory=torch.cuda.is_available(),
         persistent_workers=int(cfg['model']['num_workers'])>0,
     )
 
@@ -84,21 +84,26 @@ def _heartbeat(prefix,batch_i,total,t0,cfg,extra=None,progress_path=None):
 
 
 def build_memories(extractor,train_samples,specs,cfg,progress_path=None):
+    if not train_samples or any(s.label!=0 or s.split!='train' for s in train_samples):
+        raise ValueError('normal memory requires the official normal-reference training split')
     memory_size=int(cfg['data']['memory_size'])
     memory_images=int(cfg['data'].get('memory_images',1024))
     patches_per_image=int(cfg['data'].get('memory_patches_per_image',32))
     seed=int(cfg['seed'])
     image_ids=_sample_indices(len(train_samples),memory_images,seed+1009)
-    memories={k:Reservoir(memory_size,seed+i) for i,k in enumerate(specs)}
+    # Every method sees exactly the same sampled patch rows and reservoir draws.
+    memories={k:Reservoir(memory_size,seed) for k in specs}
     dl=loader(train_samples,cfg,indices=image_ids,test=False)
     total=len(dl); t0=time.time()
     heartbeat_n=max(1,int(cfg['eval'].get('heartbeat_batches',20)))
     print(f'[memory] using {len(image_ids)}/{len(train_samples)} normal images, <= {patches_per_image} patches/image, cap={memory_size}',flush=True)
+    patch_manifest=[]
 
     for bi,batch in enumerate(tqdm(dl,desc='memory',leave=False,mininterval=10),start=1):
         feats=extractor(batch['image'])
         p=next(iter(feats.values())).shape[1]
         patch_ids=_sample_patch_ids(p,patches_per_image,seed+bi)
+        patch_manifest.append({'batch':bi,'patch_indices':patch_ids.tolist()})
         patch_idx=torch.as_tensor(patch_ids,device=next(iter(feats.values())).device,dtype=torch.long)
         cache={}
         for name,spec in specs.items():
@@ -109,12 +114,45 @@ def build_memories(extractor,train_samples,specs,cfg,progress_path=None):
             _heartbeat('memory',bi,total,t0,cfg,extra=f'methods={len(specs)}',progress_path=progress_path)
 
     result={k:v.value() for k,v in memories.items()}
+    if progress_path is not None:
+        (Path(progress_path).parent/'memory_manifest.json').write_text(json.dumps({
+            'normal_train_indices':image_ids.tolist(),
+            'normal_train_paths':[str(train_samples[int(i)].image) for i in image_ids],
+            'patch_batches':patch_manifest,'memory_capacity':memory_size,
+            'reservoir_seed':seed,'shared_sampling_across_methods':True,
+            'memory_rows':{k:len(v) for k,v in result.items()},
+        },indent=2),encoding='utf-8')
     print('[memory] built: '+', '.join(f'{k}={len(v)}' for k,v in result.items()),flush=True)
     return result
 
 
+def _save_heatmap(path, image, mask, maps):
+    from PIL import Image, ImageDraw
+    rgb=np.clip(image*np.array([.229,.224,.225])+np.array([.485,.456,.406]),0,1)
+    height,width=rgb.shape[:2]
+    panels=[('Input',Image.fromarray((rgb*255).astype(np.uint8)))]
+    if mask is not None:
+        panels.append(('Ground truth',Image.fromarray(np.repeat((mask>0)[...,None],3,axis=2).astype(np.uint8)*255)))
+    for method,score in maps.items():
+        # Cosine distance has a fixed 0..2 scale. No per-test tuning of scoring.
+        value=np.clip(score/2.0,0,1)
+        color=np.stack([np.clip(2*value,0,1),1-np.abs(2*value-1),np.clip(1-2*value,0,1)],axis=-1)
+        panels.append((method,Image.fromarray(((.55*rgb+.45*color)*255).astype(np.uint8))))
+    canvas=Image.new('RGB',(width*len(panels),height+24),'white')
+    draw=ImageDraw.Draw(canvas)
+    for j,(title,panel) in enumerate(panels):
+        canvas.paste(panel,(j*width,24)); draw.text((j*width+5,5),title,fill='black')
+    path.parent.mkdir(parents=True,exist_ok=True)
+    canvas.save(path)
+
+
 def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
+    if not test_samples or not specs:
+        raise ValueError('evaluation requires nonempty test samples and method specifications')
     eval_cfg=cfg['eval']
+    dataset_name=test_samples[0].dataset if test_samples else ''
+    coverage=validate_pixel_masks(test_samples,dataset_name)
+    output=Path(progress_path).parent if progress_path is not None else None
     indices={k:make_index(memories[k],eval_cfg) for k in specs}
     backend=type(next(iter(indices.values()))).__name__ if indices else 'none'
     print(f'[test] NN backend={backend}; methods={len(specs)}; samples={len(test_samples)}',flush=True)
@@ -128,22 +166,36 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
     frac=float(eval_cfg['topk_fraction'])
     total=len(dl); t0=time.time()
     heartbeat_n=max(1,int(eval_cfg.get('heartbeat_batches',20)))
+    match_seconds={k:0.0 for k in specs}
+    visual_methods=[k for k in eval_cfg.get('heatmap_methods',['all_raw','main']) if k in specs]
+    visual_count=int(eval_cfg.get('max_heatmaps_per_dataset',12))
+    # Deterministic example selection for FINAL visualization only.
+    visual_ids=set()
+    if output is not None and eval_cfg.get('save_heatmaps',False):
+        abnormal=[i for i,s in enumerate(test_samples) if s.label==1]
+        normal=[i for i,s in enumerate(test_samples) if s.label==0]
+        visual_ids=set((abnormal[:(visual_count+1)//2]+normal)[:visual_count])
+    position=0
 
     for bi,batch in enumerate(tqdm(dl,desc='test',leave=False,mininterval=10),start=1):
         feats=extractor(batch['image'])
         b=batch['image'].shape[0]
         labels.extend(batch['label'].numpy().tolist())
         cache={}
+        visual_maps={i:{} for i in range(b) if position+i in visual_ids}
         for name,spec in specs.items():
             z=transform(feats,spec,cache)
             flat=z.reshape(-1,z.shape[-1])
             index=indices[name]
+            match_start=time.perf_counter()
+            need_maps=has_local or (bool(visual_maps) and name in visual_methods)
             if hasattr(index,'score_tensor'):
                 sc_t=index.score_tensor(flat).reshape(b,-1)
                 k=max(1,int(math.ceil(sc_t.shape[1]*frac)))
                 img=sc_t.topk(k,dim=1,largest=True,sorted=False).values.mean(dim=1).float().cpu().numpy()
                 scores[name].extend(img.tolist())
-                if has_local:
+                match_seconds[name]+=time.perf_counter()-match_start
+                if need_maps:
                     if sc_t.shape[1] != grid*grid:
                         raise RuntimeError(
                             f'Unexpected DINO patch-token count {sc_t.shape[1]} for grid {grid}x{grid}; '
@@ -159,7 +211,8 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
                 k=max(1,int(math.ceil(sc.shape[1]*frac)))
                 img=np.mean(np.partition(sc,-k,axis=1)[:,-k:],axis=1)
                 scores[name].extend(img.tolist())
-                if has_local:
+                match_seconds[name]+=time.perf_counter()-match_start
+                if need_maps:
                     if sc.shape[1] != grid*grid:
                         raise RuntimeError(
                             f'Unexpected DINO patch-token count {sc.shape[1]} for grid {grid}x{grid}; '
@@ -176,6 +229,14 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
                     label_i=int(batch['label'][i]); has_i=bool(batch['has_mask'][i])
                     if label_i==0 or has_i:
                         pixels[name].update(batch['mask'][i].numpy(),maps[i])
+            if visual_maps and name in visual_methods:
+                for i in visual_maps:
+                    visual_maps[i][name]=maps[i]
+        for i,examples in visual_maps.items():
+            _save_heatmap(output/'heatmaps'/f'{position+i:06d}.png',
+                          batch['image'][i].numpy(),
+                          batch['mask'][i].numpy() if has_local else None,examples)
+        position+=b
         if bi==1 or bi%heartbeat_n==0 or bi==total:
             _heartbeat('test',bi,total,t0,cfg,extra=f'backend={backend}',progress_path=progress_path)
 
@@ -185,6 +246,8 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
             'method':name,
             'image_auroc':safe_auc(labels,scores[name]),
             'image_auprc':safe_ap(labels,scores[name]),
+            'matching_and_aggregation_seconds':match_seconds[name],
+            'memory_vector_fp16_mib':memories[name].size*2/1024**2,
             'image_auroc_ci95':bootstrap_auc(
                 labels,scores[name],
                 int(eval_cfg['bootstrap_samples']),int(cfg['seed'])
@@ -193,10 +256,16 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
         if has_local:
             row.update(pixels[name].finalize())
         rows.append(row)
+    if output is not None:
+        predictions=pd.DataFrame({'image_path':[str(s.image) for s in test_samples],
+                                  'label':labels,'mask_path':[str(s.mask) if s.mask else '' for s in test_samples],
+                                  **scores})
+        predictions.to_csv(output/'image_predictions.csv',index=False)
     if progress_path is not None:
         Path(progress_path).write_text(json.dumps({
             'stage':'complete','samples':len(test_samples),'methods':len(specs),
             'backend':backend,'updated_unix':time.time(),
+            'mask_coverage':coverage,
         },indent=2),encoding='utf-8')
     return rows
 
@@ -212,7 +281,9 @@ def write_summaries(df:pd.DataFrame,results_dir):
     d['method_family']=d['method'].map(family_name)
     metrics=[c for c in [
         'image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro',
-        'feature_dim','memory_size','compression_ratio','selected_layer_count'
+        'feature_dim','memory_size','compression_ratio','selected_layer_count',
+        'matching_and_aggregation_seconds','memory_vector_fp16_mib',
+        'uvarfs_geometry_error'
     ] if c in d.columns]
     rows=[]
     for (dataset,family),g in d.groupby(['dataset','method_family'],dropna=False):

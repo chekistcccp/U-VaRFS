@@ -228,16 +228,20 @@ def _count_split(root: Path, split: str) -> int:
     if not p.exists():
         return 0
     count = 0
+    seen = set()
     for cls in ('good', 'Ungood', 'ungood', 'bad', 'normal'):
         croot = p / cls
-        if not croot.exists():
+        if not croot.exists() or croot.resolve() in seen:
             continue
+        seen.add(croot.resolve())
         iroot = croot / 'img' if (croot / 'img').is_dir() else croot
-        count += sum(1 for x in iroot.rglob('*') if x.is_file() and x.suffix.lower() in IMG_EXTS and 'anomaly_mask' not in x.parts and 'label' not in x.parts)
+        mask_dirs={'anomaly_mask','mask','masks','label','labels','ground_truth','gt','segmentation'}
+        count += sum(1 for x in iroot.rglob('*') if x.is_file() and x.suffix.lower() in IMG_EXTS
+                     and not any(part.casefold() in mask_dirs for part in x.relative_to(iroot).parts[:-1]))
     return count
 
 
-NORMALIZE_VERSION = 2
+NORMALIZE_VERSION = 3
 
 
 def _split_root(root: Path, split: str) -> Path | None:
@@ -281,14 +285,9 @@ def _class_mask_root(split_root: Path | None) -> Path | None:
     names = ('Ungood', 'ungood', 'bad', 'abnormal')
     candidates = []
     for name in names:
-        candidates.extend([
-            split_root/name/'anomaly_mask',
-            split_root/name/'mask',
-            split_root/'anomaly_mask'/name,
-            split_root/'mask'/name,
-            split_root/'label'/name,
-            split_root/'labels'/name,
-        ])
+        for folder in ('anomaly_mask', 'mask', 'masks', 'label', 'labels', 'ground_truth', 'gt', 'segmentation'):
+            candidates.extend([split_root/name/folder, split_root/folder/name])
+    candidates.extend(split_root/folder for folder in ('anomaly_mask','mask','masks','label','labels','ground_truth','gt','segmentation'))
     for p in candidates:
         if p.is_dir() and any(x.is_file() and x.suffix.lower() in IMG_EXTS for x in p.rglob('*')):
             return p
@@ -298,6 +297,10 @@ def _class_mask_root(split_root: Path | None) -> Path | None:
 def _looks_processed_dataset(root: Path) -> bool:
     train = _split_root(root, 'train')
     test = _split_root(root, 'test')
+    # Raw OCT2017 disease folders require the original deterministic split,
+    # including on case-insensitive filesystems where NORMAL matches normal.
+    if test is not None and any((test/name).is_dir() for name in ('CNV', 'DME', 'DRUSEN')):
+        return False
     return train is not None and test is not None and _class_image_root(train, 0) is not None
 
 
@@ -327,7 +330,7 @@ def _copy_processed_class(src_root: Path | None, dst_root: Path) -> int:
         if not src.is_file() or src.suffix.lower() not in IMG_EXTS:
             continue
         # Do not accidentally copy masks/labels if a source class directory contains them.
-        if any(part.lower() in ('anomaly_mask', 'mask', 'label', 'labels') for part in src.relative_to(src_root).parts[:-1]):
+        if any(part.lower() in ('anomaly_mask', 'mask', 'masks', 'label', 'labels', 'ground_truth', 'gt', 'segmentation') for part in src.relative_to(src_root).parts[:-1]):
             continue
         rel = src.relative_to(src_root)
         _link_or_copy(src, dst_root/rel)
@@ -348,7 +351,7 @@ def _copy_processed_masks(src_root: Path | None, dst_root: Path) -> int:
     return count
 
 
-def normalize_existing_processed(raw_root: Path, out_root: Path, force: bool=False) -> list[PrepResult]:
+def normalize_existing_processed(raw_root: Path, out_root: Path, force: bool=False, datasets=None) -> list[PrepResult]:
     """Normalize BMAD's released AD archives into one internal layout.
 
     BMAD's six released datasets are not directory-identical. In particular the
@@ -364,6 +367,8 @@ def normalize_existing_processed(raw_root: Path, out_root: Path, force: bool=Fal
             continue
         canonical = _canonical_from_path(p)
         if canonical is None or canonical.lower() in claimed:
+            continue
+        if datasets is not None and canonical.lower() not in datasets:
             continue
 
         dst = out_root/canonical
@@ -384,6 +389,8 @@ def normalize_existing_processed(raw_root: Path, out_root: Path, force: bool=Fal
                 continue
 
         if dst.exists():
+            if out_root.resolve() not in dst.resolve().parents:
+                raise ValueError(f'Refusing to replace dataset outside processed root: {dst}')
             shutil.rmtree(dst)
 
         split_stats = {}
@@ -754,8 +761,8 @@ def prepare_all(data_root: Path, out_root: Path, metadata_root: Path, datasets: 
         )
         return [result]
 
-    reused=normalize_existing_processed(scan_root,out_root,force)
     wanted=set(x.lower() for x in datasets) if datasets else None
+    reused=normalize_existing_processed(scan_root,out_root,force,wanted)
     funcs=[
         ('brain', lambda:prepare_brain(scan_root,out_root,metadata_root,force)),
         ('liver', lambda:prepare_liver(scan_root,out_root,force)),
@@ -769,7 +776,7 @@ def prepare_all(data_root: Path, out_root: Path, metadata_root: Path, datasets: 
     for name,fn in funcs:
         if wanted and name not in wanted:
             continue
-        if name in existing and not force:
+        if name in existing:
             continue
         results.append(fn())
 

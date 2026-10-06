@@ -44,4 +44,4 @@ RUN=("$PYTHON" -u scripts/run_all.py --config "$CONFIG" --dataset "$DATASETS")
 [[ "${FORCE_EXPERIMENT:-0}" == "1" ]] && RUN+=(--force)
 "${RUN[@]}" 2>&1 | tee logs/run_all.log
 
-echo "Done. Main tables: results/all_metrics.csv and results/summary_metrics.csv"
+echo "Done. all_metrics.csv and summary_metrics.csv are saved under results_dir in $CONFIG."

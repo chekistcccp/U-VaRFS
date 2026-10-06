@@ -61,30 +61,34 @@ class PixelAccumulator:
                 self.regions += 1
 
     def finalize(self):
-        P=max(int(self.pos.sum()),1)
-        N=max(int(self.neg.sum()),1)
+        P=int(self.pos.sum())
+        N=int(self.neg.sum())
         tp=np.cumsum(self.pos[::-1])
         fp=np.cumsum(self.neg[::-1])
-        tpr=tp/P
-        fpr=fp/N
-        pixel_auc=float(np.trapezoid(tpr,fpr)) if len(fpr)>1 else float('nan')
+        tpr=tp/max(P,1)
+        fpr=fp/max(N,1)
+        pixel_auc=float(auc(np.r_[0.0,fpr],np.r_[0.0,tpr])) if P and N else float('nan')
         precision=tp/np.maximum(tp+fp,1)
         recall=tpr
-        pixel_ap=float(np.trapezoid(precision,recall)) if len(recall)>1 else float('nan')
+        # Histogram approximation to average precision, including the first
+        # recall jump. Trapezoidal PR integration can give 0.5 for perfect scores.
+        pixel_ap=float(np.sum(np.diff(np.r_[0.0,recall])*precision)) if P else float('nan')
 
         if self.regions and self.normal_pixels:
             pro=self.pro/self.regions
             pfpr=self.fp/self.normal_pixels
-            keep=pfpr<=self.max_fpr
-            x=pfpr[keep]
-            y=pro[keep]
-            if len(x)>1:
-                order=np.argsort(x)
-                x=x[order]
-                y=y[order]
-                ux=np.unique(x)
-                uy=np.array([y[x==v].max() for v in ux])
-                aupro=float(auc(ux,uy)/self.max_fpr) if len(ux)>1 else float('nan')
+            order=np.argsort(pfpr)
+            x,y=pfpr[order],pro[order]
+            ux=np.unique(x)
+            uy=np.array([y[x==v].max() for v in ux])
+            if len(ux)>1:
+                # Interpolate to the exact 0.3 FPR limit rather than dropping
+                # the final interval or returning NaN for a perfect map.
+                cutoff=np.interp(self.max_fpr,ux,uy)
+                keep=ux<self.max_fpr
+                xx=np.r_[ux[keep],self.max_fpr]
+                yy=np.r_[uy[keep],cutoff]
+                aupro=float(auc(xx,yy)/self.max_fpr) if len(xx)>1 else float('nan')
             else:
                 aupro=float('nan')
         else:

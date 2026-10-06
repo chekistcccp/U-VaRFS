@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from pathlib import Path
+
+EXPERIMENT_VERSION = 'gpu-eval-v4-protocol-fixes'
+BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
+RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
+
+
+def expected_method_names(cfg):
+    names = []
+    for method in cfg['methods']:
+        if method in RANDOM_FAMILIES:
+            names.extend(f'{method}_seed{seed}' for seed in cfg.get('random_baseline_seeds',[cfg['seed']]))
+        else:
+            names.append(method)
+    if len(names) != len(set(names)):
+        raise ValueError('duplicate methods or random baseline seeds')
+    return sorted(names)
+
+
+def config_fingerprint(cfg):
+    return hashlib.sha256(json.dumps(cfg,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+
+
+def code_fingerprint(root: Path):
+    digest=hashlib.sha256()
+    for path in sorted((root/'uvarfs').glob('*.py'))+[root/'scripts'/'run_all.py']:
+        digest.update(str(path.relative_to(root)).encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def data_fingerprint(train, test):
+    """Detect changes to sampled protocol inputs without hashing full archives.
+
+    File identity, size and nanosecond mtime cover all train/test images and
+    evaluation masks. Masks only participate in provenance, never fitting.
+    """
+    digest=hashlib.sha256()
+    for sample in [*train,*test]:
+        digest.update(json.dumps([sample.dataset,sample.split,sample.label]).encode())
+        for path in (sample.image,sample.mask):
+            if path is None:
+                digest.update(b'null')
+            else:
+                stat=path.stat()
+                digest.update(json.dumps([str(path.resolve()),stat.st_size,stat.st_mtime_ns]).encode())
+    return digest.hexdigest()
+
+
+def completed_result_compatible(frame, metadata, progress, cfg, code_hash, pixel_required, data_hash):
+    if not isinstance(metadata,dict) or not isinstance(progress,dict):
+        return False
+    if frame.empty or not {'method','experiment_version','image_auroc','image_auprc'} <= set(frame.columns):
+        return False
+    methods=expected_method_names(cfg)
+    if frame['method'].duplicated().any() or sorted(frame['method']) != methods:
+        return False
+    if not frame['experiment_version'].astype(str).eq(EXPERIMENT_VERSION).all():
+        return False
+    if metadata.get('config_fingerprint') != config_fingerprint(cfg) or metadata.get('code_fingerprint') != code_hash:
+        return False
+    if metadata.get('data_fingerprint')!=data_hash:
+        return False
+    if progress.get('stage')!='complete' or progress.get('methods')!=len(methods):
+        return False
+    required=['image_auroc','image_auprc']+(['pixel_auroc','pixel_auprc','aupro'] if pixel_required else [])
+    return all(column in frame and frame[column].map(
+        lambda value:isinstance(value,(int,float)) and math.isfinite(value) and 0<=value<=1
+    ).all() for column in required)

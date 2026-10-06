@@ -403,7 +403,7 @@ lambda_grid:
    0.0005, 0.0002, 0.0001, 0.00005,
    0.00002, 0.00001, 0.000005, 0.000002, 0.000001]
 geometry_tolerance: 0.05
-max_iter: 400
+max_iter: 2000
 tol: 1e-5
 min_features: 32
 max_features: 256
@@ -797,7 +797,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v3-batched-uvarfs
+gpu-eval-v4-protocol-fixes
 ```
 
 原因：
@@ -915,7 +915,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v3-batched-uvarfs
+experiment_version = gpu-eval-v4-protocol-fixes
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1117,8 +1117,9 @@ Codex 接手后优先级：
 2. 不改研究设计；
 3. 先单独验证 Liver 新版 batched U-VaRFS：
    ```bash
-   SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
+   SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
    ```
+   首次 v4 验证保留 preprocessing，以更新 mask 归一化；之后可 `SKIP_PREPROCESS=1`。
 4. 确认：
    - ASLS 有日志；
    - batched FISTA 有日志；
@@ -1165,3 +1166,35 @@ Codex 接手后优先级：
 ]
 
 这是本仓库所有后续开发、实验、论文与问答必须围绕的唯一主线。
+
+---
+
+# 27. 2026-10-06 原始协议实现修正交接
+
+当前版本为 `gpu-eval-v4-protocol-fixes`，默认结果目录为 `results/gpu-eval-v4-protocol-fixes/`。原回传 v3 结果与 `run.log` 保持原样；第 17 节描述的是此前服务器运行历史，不能视为 v4 已验证。
+
+本次按原主线修正：总体 normal variability 统计、每个 lambda 的预算后几何检查、FISTA 投影残差与迭代上限、mask 配对和 pixel metric 数学、同 K 随机层 baseline、统一 memory sampling 与严格 checkpoint 指纹。ASLS sigmoid/Adam 目标与 U-VaRFS 目标保持原样。ASLS 饱和只增加诊断，没有切换 Hard-Concrete 或改目标函数。
+
+当前默认方法共 28 个，新增 `randomk_raw_seed*` / `randomk_uvarfs_seed*`，保留原 18 个方法及全部 5 个随机 seeds。FISTA 最大迭代数由 400 提高到 2000，仅为数值求解精度；不能宣称每个 fit 均收敛。所有数据与表示预算不变。无预算内可行解时，必须报告 `feasible=false`，不能将 fallback 描述为满足 geometry tolerance。
+
+首次验证 Liver 应保留 preprocessing，以更新 `NORMALIZE_VERSION=3`：
+
+```bash
+SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
+```
+
+或先 `PREPROCESS_ONLY=1 DATASETS=liver bash run.sh`，再 `python scripts/run_all.py --dataset liver --check-data-only`；预检不加载 DINOv3。Liver 成功后仍须运行六数据集，第一次全量也保留 preprocessing。
+
+本地只能验证数学、I/O 与 CPU fixture 流程；当前工作机缺少真实 BMAD 数据、模型与 CUDA PyTorch，尚未得到 v4 真实性能结果。具体修改与统计/效率口径见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。
+
+---
+
+# 28. 仓库同步默认设置（用户于 2026-10-06 明确授权）
+
+用户要求：**每次改进完成后，将改进结果同步到仓库，作为本项目默认行为。**
+
+- 每轮改进完成且必要检查通过后，将相关代码、配置、测试、交接文档和结果分析提交到 Git，并推送到配置的远程仓库；沿用当前工作分支，除非用户另有指定。
+- 该授权持续有效，后续完成改进时直接执行提交与推送，无需再次确认。
+- 可共享的实验摘要、分析报告与图表放入可跟踪的 `reports/`，明确实验版本与验证边界；实验运行目录继续遵循 `.gitignore` 和既有原始数据/模型管理协议。
+- 提交包含本轮工作相关文件；已有用户文件按其原有用途保留。同步前核对远程分支状态，使用正常提交和推送流程。
+- 完成后告知提交号与同步状态；网络、认证或分支保护导致推送失败时保留本地提交，明确报告尚未同步成功。
