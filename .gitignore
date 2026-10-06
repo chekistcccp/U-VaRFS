@@ -5,7 +5,9 @@ data/archives/*
 !data/archives/.gitkeep
 models/
 results/
+reports/
 logs/
+*.log
 __pycache__/
 *.pyc
 .pytest_cache/
