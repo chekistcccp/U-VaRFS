@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from .data import BMADDataset, validate_pixel_masks
 from .memory import Reservoir, make_index
-from .metrics import safe_auc, safe_ap, bootstrap_auc, PixelAccumulator
+from .metrics import safe_auc, safe_ap, bootstrap_auc, PixelAccumulator, prepare_pixel_mask
 from .transforms import concat_layers, apply_pca
 from .u_varfs import apply_uvarfs
 
@@ -183,6 +183,7 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
         labels.extend(batch['label'].numpy().tolist())
         cache={}
         visual_maps={i:{} for i in range(b) if position+i in visual_ids}
+        prepared_masks=[prepare_pixel_mask(batch['mask'][i].numpy()) for i in range(b)] if has_local else []
         for name,spec in specs.items():
             z=transform(feats,spec,cache)
             flat=z.reshape(-1,z.shape[-1])
@@ -228,7 +229,7 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
                 for i in range(b):
                     label_i=int(batch['label'][i]); has_i=bool(batch['has_mask'][i])
                     if label_i==0 or has_i:
-                        pixels[name].update(batch['mask'][i].numpy(),maps[i])
+                        pixels[name].update(batch['mask'][i].numpy(),maps[i],prepared=prepared_masks[i])
             if visual_maps and name in visual_methods:
                 for i in visual_maps:
                     visual_maps[i][name]=maps[i]

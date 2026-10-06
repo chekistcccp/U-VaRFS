@@ -1,0 +1,28 @@
+{
+  "fixture_only": true,
+  "reference_git_revision": "0295e552a5cf0ddf3c16e41d8a7ea69a7020f32b",
+  "python": "3.13.5",
+  "numpy": "2.1.3",
+  "input_shape": [
+    4,
+    28,
+    448,
+    448
+  ],
+  "normal_and_two_region_masks": true,
+  "random_seed": 44,
+  "repeats": 3,
+  "pixel_histograms_pro_counts_and_final_metrics_exactly_equal": true,
+  "implementation": "shared mask connectivity and single sort for histogram plus normal PRO counts",
+  "v4_seconds": [
+    0.629918099999486,
+    0.6103987999995297,
+    0.6097903000008955
+  ],
+  "v5_seconds": [
+    0.3714161000025342,
+    0.38050310000107856,
+    0.3740570999980264
+  ],
+  "median_cpu_speed_ratio": 1.6318332147759
+}

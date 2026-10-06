@@ -797,7 +797,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v4-protocol-fixes
+gpu-eval-v5-normal-audit
 ```
 
 原因：
@@ -915,7 +915,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v4-protocol-fixes
+experiment_version = gpu-eval-v5-normal-audit
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1117,9 +1117,9 @@ Codex 接手后优先级：
 2. 不改研究设计；
 3. 先单独验证 Liver 新版 batched U-VaRFS：
    ```bash
-   SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
+   SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
    ```
-   首次 v4 验证保留 preprocessing，以更新 mask 归一化；之后可 `SKIP_PREPROCESS=1`。
+   v4 六数据集已完成，mask 归一化完整；已有数据/模型时，新版可跳过准备阶段。
 4. 确认：
    - ASLS 有日志；
    - batched FISTA 有日志；
@@ -1171,7 +1171,7 @@ Codex 接手后优先级：
 
 # 27. 2026-10-06 原始协议实现修正交接
 
-当前版本为 `gpu-eval-v4-protocol-fixes`，默认结果目录为 `results/gpu-eval-v4-protocol-fixes/`。原回传 v3 结果与 `run.log` 保持原样；第 17 节描述的是此前服务器运行历史，不能视为 v4 已验证。
+本节保留 v4 当时的历史交接：版本为 `gpu-eval-v4-protocol-fixes`，默认结果目录为 `results/gpu-eval-v4-protocol-fixes/`。当前 v4 已在服务器验证全六数据集，最新状态见第 29 节；第 17 节属于更早运行历史。
 
 本次按原主线修正：总体 normal variability 统计、每个 lambda 的预算后几何检查、FISTA 投影残差与迭代上限、mask 配对和 pixel metric 数学、同 K 随机层 baseline、统一 memory sampling 与严格 checkpoint 指纹。ASLS sigmoid/Adam 目标与 U-VaRFS 目标保持原样。ASLS 饱和只增加诊断，没有切换 Hard-Concrete 或改目标函数。
 
@@ -1198,3 +1198,23 @@ SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
 - 可共享的实验摘要、分析报告与图表放入可跟踪的 `reports/`，明确实验版本与验证边界；实验运行目录继续遵循 `.gitignore` 和既有原始数据/模型管理协议。
 - 提交包含本轮工作相关文件；已有用户文件按其原有用途保留。同步前核对远程分支状态，使用正常提交和推送流程。
 - 完成后告知提交号与同步状态；网络、认证或分支保护导致推送失败时保留本地提交，明确报告尚未同步成功。
+
+---
+
+# 29. 2026-10-06 v4 回传与 v5 normal-only 诊断交接
+
+v4 全六数据集 × 28 方法完整；Brain/Liver/RESC 异常 mask 全覆盖，全部 image/pixel 指标、逐图预测和来源信息已复核。分析见 [v4 报告](reports/2026-10-06-v4-analysis/analysis.md)。旧版本产物不可改写/混合。
+
+Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw mean=79.47%；Main 仅在 Liver/OCT2017 高于同 K Random baseline。Liver AUPRO=95.10% 是正向证据，但 Brain 明显较差。主 U-VaRFS 六个最终表示均不可行（geometry error≈0.052–0.071）；投影残差较小，不能将迭代变化未收敛与几何不可行混为一谈。
+
+当前版本为 `gpu-eval-v5-normal-audit`，独立输出 `results/gpu-eval-v5-normal-audit/`。具体说明见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)：
+
+- ASLS/U-VaRFS 目标拟合使用 highest float32 matmul precision，退出恢复原精度；原 frozen backbone、detector、loss 与所有实验预算保持。
+- Batched FISTA 按 lambda 重启动量，记录原目标分项、box optimality gap 与独立数值诊断；beta、lambda path、几何容差、维度预算和原选择规则不变。
+- `lambda=0` 只用于不可行原因的 normal-only 诊断，明确 `selection_candidate=false`，不参与 main 选择。
+- **Main 默认 ASLS 仍是 pooled geometry**。增加 `asls_patch_raw`/`asls_patch_uvarfs` 两项消融，使用已有 fit patches、原 loss、sigmoid/Adam/离散规则和等价 Gram 内积，共 30 方法；原 28 方法与全部五 seeds 保留。
+- 主 ASLS geometry 输入切换按第 19 节等待用户明确选择。不得据 test AUROC 选择 pooled/patch 版本，不得静默替换为 Hard-Concrete 或改目标函数。
+- Mask 连通域共享与 pixel histogram/PRO 排序复用只影响最终评价开销。与 v4 的独立 CPU fixture 对照计数及指标完全一致，不代表已验证服务器总加速。
+- 不向含其他版本 CSV 的目录写入；指纹统一 POSIX 路径和 LF。
+
+本地工作机缺少真实数据、模型和 CUDA PyTorch，尚未取得 v5 真实性能。服务器先执行 `SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`，检查正常拟合与 pixel 指标，再运行全六。不得用本轮评价标签调 beta、lambda、层数或其他训练参数。

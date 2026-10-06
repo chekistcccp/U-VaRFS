@@ -2,6 +2,7 @@ from __future__ import annotations
 import math, time
 import torch
 import torch.nn.functional as F
+from .numerics import precise_matmul
 
 
 def _r_scale(H: torch.Tensor, P: torch.Tensor) -> float:
@@ -39,6 +40,23 @@ def _lipschitz_bound(H, P, beta, rscale):
     return max(float(rows.max().item()) * (1.0 + 1e-6), 1e-12)
 
 
+def _objective_certificate(W,H,P,beta,rscale,lambdas):
+    """Same box-constrained objective; convex first-order optimality certificate.
+
+    The box linearization gap bounds F(W)-min F. It is separate from the
+    iteration-change criterion and from representation geometry feasibility.
+    """
+    difference=1-W
+    representation=.5*(difference*(H @ difference)).sum(0)
+    variability=beta*rscale*(P.T @ W).square().sum(0)
+    sparsity=torch.as_tensor(lambdas,device=W.device,dtype=W.dtype)*W.sum(0)
+    gradient=_apply_A(W,H,P,beta,rscale)-H.sum(1,keepdim=True)+torch.as_tensor(lambdas,device=W.device,dtype=W.dtype)
+    gap=(gradient.clamp_min(0)*W-gradient.clamp_max(0)*(1-W)).sum(0)
+    return {'objective':representation+variability+sparsity,
+            'representation_term':representation,'variability_term':variability,
+            'sparsity_term':sparsity,'box_optimality_gap':gap}
+
+
 @torch.inference_mode(False)
 def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, log_every=50, label='uvarfs'):
     """Solve all lambda candidates in parallel.
@@ -52,7 +70,8 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
     L=_lipschitz_bound(H,P,beta,rscale)
     W=torch.ones((m,len(lambdas)),device=H.device,dtype=H.dtype)
     Y=W.clone()
-    t=1.0
+    t=torch.ones((1,len(lambdas)),device=H.device,dtype=H.dtype)
+    restart_counts=torch.zeros(len(lambdas),device=H.device,dtype=torch.long)
     target=H.sum(1,keepdim=True)
     t0=time.time()
     residual = torch.full((len(lambdas),),float('inf'),device=H.device)
@@ -63,8 +82,13 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
         Z=Y-grad/L
         # On [0,1], the L1 proximal operator is a positive threshold + box projection.
         Wn=torch.clamp(Z-lams/L,0.0,1.0)
-        tn=0.5*(1.0+math.sqrt(1.0+4.0*t*t))
-        Y=Wn+((t-1.0)/tn)*(Wn-W)
+        tn=0.5*(1.0+torch.sqrt(1.0+4.0*t*t))
+        # Restart each lambda's momentum independently when it points uphill.
+        restart=((Y-Wn)*(Wn-W)).sum(0)>0
+        momentum=torch.where(restart[None,:],0.0,(t-1.0)/tn)
+        Y=Wn+momentum*(Wn-W)
+        tn=torch.where(restart[None,:],1.0,tn)
+        restart_counts+=restart
 
         need_check=(it % check_every == 0) or it==max_iter
         need_log=(it==1) or (it % log_every == 0) or it==max_iter
@@ -96,9 +120,13 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
         if stop:
             print(f'[{label}] converged at iter={it}, max_rel={rel_val:.3e}',flush=True)
             break
+    certificate=_objective_certificate(W,H,P,beta,rscale,lambdas)
     return W,L,it,{'relative_change':relative.cpu().tolist(),
                    'projected_residual':residual.cpu().tolist(),
-                   'converged':((relative<tol)&(residual<tol)).cpu().tolist()}
+                   'converged':((relative<tol)&(residual<tol)).cpu().tolist(),
+                   'objective_converged':(certificate['box_optimality_gap']<=tol).cpu().tolist(),
+                   'restart_counts':restart_counts.cpu().tolist(),
+                   **{k:v.cpu().tolist() for k,v in certificate.items()}}
 
 
 def _select_solution(W, H, lambdas, cfg, solver):
@@ -140,11 +168,16 @@ def _select_solution(W, H, lambdas, cfg, solver):
                      'relative_change':solver['relative_change'][j],
                      'projected_residual':solver['projected_residual'][j],
                      'solver_converged':bool(solver['converged'][j])})
+        for field in ['objective','representation_term','variability_term','sparsity_term',
+                      'box_optimality_gap','objective_converged','restart_counts']:
+            if field in solver:
+                path[-1][field]=solver[field][j]
     feasible=[j for j,p in enumerate(path) if p['feasible']]
     chosen=min(feasible,key=lambda j:(len(indices[j]),errors[j])) if feasible else min(range(len(path)),key=lambda j:errors[j])
     return chosen,indices[chosen],retained[:,chosen],path
 
 
+@precise_matmul()
 def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, label: str='uvarfs') -> dict:
     t0=time.time()
     if X.ndim!=2 or X.shape[0]<2 or X.shape[1]<1 or not torch.isfinite(X).all():
@@ -202,7 +235,7 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
         print(f'[{label}] fallback: no budgeted representation meets geometry tolerance={tol_geom:g}',flush=True)
     if not path[chosen]['solver_converged']:
         print(f'[{label}] selected solution reached iteration limit; residual={path[chosen]["projected_residual"]:.3e}',flush=True)
-    return {
+    result={
         'lambda':lam,
         'weights':w.cpu().numpy(),
         'active':active.cpu().numpy(),
@@ -218,7 +251,20 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
         'solver_iterations':used_iter,
         'solver_lipschitz':L,
         'fit_seconds':elapsed,
+        'solver_matmul_precision':'highest',
+        'objective':path[chosen]['objective'],
+        'box_optimality_gap':path[chosen]['box_optimality_gap'],
+        'objective_converged':path[chosen]['objective_converged'],
+        'momentum_restarts':path[chosen]['restart_counts'],
     }
+    # Diagnostic only: never extend the selected lambda path or tune beta.
+    if not result['feasible'] and cfg.get('diagnose_infeasible',False):
+        diagnostic_W,_,_,diagnostic_solver=_batched_fista(
+            H,P,beta,rscale,[0.0],max_iter,tol,check_every,log_every,
+            label=f'{label}:lambda0-diagnostic')
+        _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver)
+        result['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
+    return result
 
 
 def apply_uvarfs(x: torch.Tensor, result: dict) -> torch.Tensor:

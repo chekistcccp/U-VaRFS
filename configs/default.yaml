@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v4-protocol-fixes
+results_dir: results/gpu-eval-v5-normal-audit
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
@@ -24,6 +24,7 @@ data:
   test_batch_size: 16
 
 asls:
+  geometry_representation: pooled
   geometry_tolerance: 0.05
   variability_weight: 0.15
   sparsity_weight: 0.02
@@ -45,6 +46,7 @@ uvarfs:
   min_features: 32
   max_features: 256
   active_threshold: 1.0e-4
+  diagnose_infeasible: true
 
 methods:
   - main
@@ -59,6 +61,8 @@ methods:
   - random4_uvarfs
   - randomk_raw
   - randomk_uvarfs
+  - asls_patch_raw
+  - asls_patch_uvarfs
 
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]
 

@@ -1,7 +1,7 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v4-protocol-fixes`**。原始研究主线保持不变；修正统计、预算后几何检查、mask 评价与实验追溯。新版运行步骤和验证边界见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。旧版回传结果保留在 `results/`，新版使用独立目录。
+> **当前实现版本：`gpu-eval-v5-normal-audit`**。主 ASLS 仍用 pooled geometry，新增 normal patch geometry 消融；改进原目标数值求解、不可行性诊断与像素评价开销。运行步骤和验证边界见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)。历史结果保持独立目录，尚未取得 v5 真实性能结果。
 
-已归档的 v3 回传结果与分析见 [六数据集实验分析](reports/2026-10-06-v3-analysis/analysis.md)。项目默认在每轮改进完成并检查通过后提交、推送相关修改与报告，具体约定见 `AGENTS.md` 第 28 节。
+已归档的回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。项目默认在每轮改进完成并检查通过后提交、推送相关修改与报告，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
 > **数据入口已固定为 `data/archives/`**  
 > 你只需把自行下载的 BMAD 原始压缩包全部放入该目录，不需要手工解压、改名或整理内部目录。  
@@ -203,6 +203,8 @@ K_C = \frac{1}{L}\sum_{l=1}^{L} K_l
 ]
 
 当前实现对 normal-reference 图像的 mean-pooled representation 构造每层 cosine Gram，并使用全层平均 consensus。
+
+v5 默认 Main 保留这一输入；新增 normal patch geometry 的 Raw/U-VaRFS 消融，复用现有 fit patches 和相同目标，通过 layer-Gram 内积等价计算控制内存。主输入切换需明确指令；不能静默修改 ASLS 或以测试性能择优选择版本。
 
 ### 6.3 Layer variability
 
@@ -483,9 +485,9 @@ z_p\in\mathbb{R}^{D'}
 
 为控制内存，默认：
 
-- 每数据集最多随机采样约 100k normal patches；
-- 可进一步使用 k-center greedy / coreset 压缩至 10k–50k；
-- 检索使用 FAISS cosine / inner-product index。
+- 每数据集采样最多 1024 张正常 train 图像、每图 32 个 patches；
+- 相同 reservoir seed 将正常 memory bank 限制到 20000 rows；
+- 检索使用 Torch CUDA FP16 exact cosine 1-NN，FAISS 仅为 fallback。
 
 所有 feature-selection 方法使用相同 memory protocol，保证公平。
 

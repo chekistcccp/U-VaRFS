@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-EXPERIMENT_VERSION = 'gpu-eval-v4-protocol-fixes'
+EXPERIMENT_VERSION = 'gpu-eval-v5-normal-audit'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
@@ -29,9 +29,26 @@ def config_fingerprint(cfg):
 def code_fingerprint(root: Path):
     digest=hashlib.sha256()
     for path in sorted((root/'uvarfs').glob('*.py'))+[root/'scripts'/'run_all.py']:
-        digest.update(str(path.relative_to(root)).encode())
-        digest.update(path.read_bytes())
+        digest.update(path.relative_to(root).as_posix().encode())
+        digest.update(path.read_bytes().replace(b'\r\n',b'\n'))
     return digest.hexdigest()
+
+
+def validate_results_version(root: Path):
+    """Refuse cross-version overwrites, even with force/resume disabled."""
+    import pandas as pd
+    paths=[root/'all_metrics.csv',root/'all_metrics.partial.csv']
+    paths.extend(root/name/'metrics.csv' for name in BMAD_DATASETS)
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            frame=pd.read_csv(path)
+        except (pd.errors.EmptyDataError,pd.errors.ParserError):
+            continue  # Incomplete same-directory files can be rerun.
+        if len(frame) and ('experiment_version' not in frame or
+                          not frame.experiment_version.eq(EXPERIMENT_VERSION).all()):
+            raise ValueError(f'Results version differs at {path}; set results_dir to a fresh version directory. Historical results must remain intact.')
 
 
 def data_fingerprint(train, test):

@@ -13,7 +13,7 @@ from uvarfs.pipeline_fit import fit_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
-                             code_fingerprint,data_fingerprint,expected_method_names,completed_result_compatible)
+                             code_fingerprint,data_fingerprint,expected_method_names,completed_result_compatible,validate_results_version)
 
 
 def _append_layer_rows(layer_rows,out,dname,num_layers):
@@ -54,6 +54,7 @@ def main():
     processed=Path(paths.get('processed_data','data/processed/BMAD'))
     model_dir=Path(paths.get('model_dir','models/dinov3_vitsplus'))
     res=ensure_dir(cfg['results_dir'])
+    validate_results_version(res)
     roots=discover_bmad_roots(processed)
     if not roots:
         raise SystemExit(f'No processed BMAD datasets found under {processed}. Run scripts/prepare_bmad.py first.')
@@ -126,6 +127,8 @@ def main():
                    'backbone':{'num_layers':extractor.num_layers,'hidden_dim':extractor.hidden_dim,
                                'patch_size':extractor.patch_size,'prefix_tokens':extractor.num_prefix},
                    'torch_version':torch.__version__,'cuda_version':torch.version.cuda,
+                   'objective_matmul_precision':'highest',
+                   'asls_geometry_representation':cfg['asls'].get('geometry_representation','pooled'),
                    'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
                   out/'run_metadata.json')
 
@@ -161,7 +164,6 @@ def main():
         print(f'[{dname}] evaluation complete in {eval_s/60:.1f} min',flush=True)
 
         peak=torch.cuda.max_memory_allocated()/1024**3 if torch.cuda.is_available() else 0.0
-        asls_info=json.loads((out/'asls.json').read_text(encoding='utf-8'))
         for r in rows:
             spec=specs[r['method']]
             dim=int(memories[r['method']].shape[1])
@@ -175,13 +177,18 @@ def main():
                 compression_ratio=1.0-dim/max(candidate_dim,1),
                 memory_size=len(memories[r['method']]),experiment_version=EXPERIMENT_VERSION,
                 timing_scope='shared_dataset_all_methods',
-                asls_geometry_feasible=asls_info.get('feasible'),
+                asls_geometry_feasible=spec.get('asls_geometry',{}).get('feasible'),
+                asls_geometry_representation=spec.get('asls_geometry',{}).get('geometry_representation'),
+                asls_geometry_error=spec.get('asls_geometry',{}).get('geometry_error'),
             )
             if spec['kind']=='uvarfs':
                 r.update(uvarfs_geometry_error=spec['obj']['geometry_error'],
                          uvarfs_geometry_feasible=spec['obj']['feasible'],
                          uvarfs_solver_converged=spec['obj']['solver_converged'],
-                         uvarfs_selected_lambda=spec['obj']['lambda'])
+                         uvarfs_selected_lambda=spec['obj']['lambda'],
+                         uvarfs_objective=spec['obj']['objective'],
+                         uvarfs_box_optimality_gap=spec['obj']['box_optimality_gap'],
+                         uvarfs_objective_converged=spec['obj']['objective_converged'])
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)

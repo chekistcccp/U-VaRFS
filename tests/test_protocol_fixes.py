@@ -265,13 +265,17 @@ class CPUExactIndex:
         return 1-(F.normalize(query,dim=1) @ self.memory.T).amax(1).clamp(-1,1)
 
 
-def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,monkeypatch):
+@pytest.mark.parametrize('geometry_representation',['pooled','patch'])
+def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,monkeypatch,geometry_representation):
     monkeypatch.setattr('uvarfs.pipeline_eval.make_index',lambda memory,cfg:CPUExactIndex(memory))
     cfg = load_config(Path(__file__).resolve().parents[1]/'configs'/'default.yaml')
     cfg['model'].update(input_size=8,batch_size=2,num_workers=0)
     cfg['data'].update(fit_images=4,variability_images=4,patches_per_image=4,
                        memory_images=4,memory_patches_per_image=4,memory_size=5,test_batch_size=2)
     cfg['asls'].update(steps=10,geometry_tolerance=.8)
+    cfg['asls']['geometry_representation']=geometry_representation
+    if geometry_representation=='patch':
+        cfg['methods']=[name.replace('asls_patch_','asls_pooled_') for name in cfg['methods']]
     cfg['uvarfs'].update(min_features=2,max_features=4,max_iter=400,
                          lambda_grid=[.01,.0001,.000001],geometry_tolerance=.8)
     cfg['eval'].update(bootstrap_samples=0,max_heatmaps_per_dataset=2)
@@ -292,7 +296,7 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     extractor = TinyFrozenExtractor()
     specs = fit_method_specs(extractor,train,cfg,output)
     assert sorted(specs) == expected_method_names(cfg)
-    assert len(specs) == 28
+    assert len(specs) == 30
     k = len(specs['main']['layers'])
     for seed in cfg['random_baseline_seeds']:
         assert len(specs[f'randomk_raw_seed{seed}']['layers']) == k

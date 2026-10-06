@@ -4,6 +4,15 @@ from sklearn.metrics import roc_auc_score, average_precision_score, auc
 from scipy import ndimage
 
 
+def prepare_pixel_mask(mask):
+    """Final-evaluation-only mask data, reusable by every compared method."""
+    mask=np.asarray(mask,dtype=bool)
+    label,count=ndimage.label(mask) if mask.any() else (np.zeros_like(mask,dtype=np.int32),0)
+    flat=label.ravel()
+    return {'mask':mask,'normal':~mask,
+            'regions':tuple(np.flatnonzero(flat==rid) for rid in range(1,count+1))}
+
+
 def safe_auc(y,s):
     y=np.asarray(y); s=np.asarray(s)
     return float(roc_auc_score(y,s)) if len(np.unique(y))>1 else float("nan")
@@ -37,25 +46,37 @@ class PixelAccumulator:
         if values.size == 0:
             return np.zeros(len(thresholds),dtype=np.float64)
         vals=np.sort(values.astype(np.float32,copy=False))
-        idx=np.searchsorted(vals,thresholds,side='left')
-        return (vals.size-idx).astype(np.float64)
+        return (vals.size-np.searchsorted(vals,thresholds,side='left')).astype(np.float64)
 
-    def update(self,mask,score):
-        mask=np.asarray(mask).astype(bool)
+    def _histogram_and_counts(self,values):
+        # Sort once for BOTH the pixel histogram and fixed PRO thresholds.
+        # The final histogram edge is inclusive, as in numpy.histogram.
+        vals=np.sort(values.astype(np.float32,copy=False))
+        boundaries=np.searchsorted(vals,self.edges,side='left')
+        boundaries[-1]=np.searchsorted(vals,self.edges[-1],side='right')
+        counts=(vals.size-np.searchsorted(vals,self.thresholds,side='left')).astype(np.float64)
+        return np.diff(boundaries),counts
+
+    def update(self,mask,score,prepared=None):
+        prepared=prepare_pixel_mask(mask) if prepared is None else prepared
+        mask=prepared['mask']
         score=np.asarray(score,dtype=np.float32)
+        if mask.shape!=score.shape:
+            raise ValueError('pixel score and mask shapes must match')
         score=np.clip(score,self.edges[0],self.edges[-1]-1e-7)
 
-        self.pos += np.histogram(score[mask],bins=self.edges)[0]
-        self.neg += np.histogram(score[~mask],bins=self.edges)[0]
-
-        normal=score[~mask]
+        positive,_=self._histogram_and_counts(score[mask])
+        normal=score[prepared['normal']]
+        negative,counts=self._histogram_and_counts(normal)
+        self.pos += positive
+        self.neg += negative
         self.normal_pixels += normal.size
         if normal.size:
-            self.fp += self._counts_ge(normal,self.thresholds)
+            self.fp += counts
 
-        lab,n=ndimage.label(mask)
-        for rid in range(1,n+1):
-            vals=score[lab==rid]
+        flat=score.ravel()
+        for indices in prepared['regions']:
+            vals=flat[indices]
             if vals.size:
                 self.pro += self._counts_ge(vals,self.thresholds)/vals.size
                 self.regions += 1

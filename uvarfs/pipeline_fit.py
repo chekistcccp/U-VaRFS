@@ -77,12 +77,25 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
                'patches_per_image':ppi,'sampled_patches':patch_manifest,
                'variability_definition':'global_mean_squared_delta/(global_population_variance+epsilon)',
                'variability_epsilon':float(cfg['data'].get('variability_epsilon',1e-6)),
+               'asls_geometry_representation':cfg['asls'].get('geometry_representation','pooled'),
                'perturbations':list(PERTURBATIONS),
                'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},
               dataset_out/'fit_manifest.json')
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
-    print(f"[fit] ASLS start: layers={len(pooled)} pooled_samples={next(iter(pooled.values())).shape[0]}", flush=True)
-    asls = fit_asls(pooled, layer_var, cfg["asls"])
+    representation=cfg['asls'].get('geometry_representation','pooled')
+    inputs={'pooled':pooled,'patch':patches}
+    print(f"[fit] ASLS start: geometry={representation} layers={len(pooled)} samples={next(iter(inputs[representation].values())).shape[0]}", flush=True)
+    asls = fit_asls(inputs[representation], layer_var, cfg["asls"])
+    comparisons={representation:asls}
+    for other in ['pooled','patch']:
+        if other!=representation and any(method.startswith(f'asls_{other}_') for method in cfg['methods']):
+            print(f'[fit] ASLS {other} geometry ablation',flush=True)
+            comparisons[other]=fit_asls(inputs[other],layer_var,{**cfg['asls'],'geometry_representation':other})
+    for mode,result in comparisons.items():
+        save_json(result,dataset_out/f'asls_{mode}.json')
+    # Keep only selection metadata here; optimizer traces live in separate files.
+    asls['geometry_comparisons']={mode:{k:result[k] for k in ['selected_layers','geometry_error','feasible','geometry_representation']}
+                                  for mode,result in comparisons.items()}
     print(f"[fit] ASLS done: selected_layers={asls['selected_layers']} geometry_error={asls['geometry_error']:.4f}", flush=True)
     save_json(asls, dataset_out / "asls.json")
     return patches, var_vectors, asls
@@ -123,6 +136,16 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
         "fixed4_uvarfs": {"layers": fixed, "kind": "uvarfs", "obj": fixed_uv},
         "all_uvarfs": {"layers": all_layers, "kind": "uvarfs", "obj": all_uv},
     }
+    for mode,selection in asls['geometry_comparisons'].items():
+        layers=selection['selected_layers']
+        if f'asls_{mode}_raw' in enabled:
+            specs[f'asls_{mode}_raw']={'layers':layers,'kind':'raw'}
+        if f'asls_{mode}_uvarfs' in enabled:
+            obj=main_uv if layers==selected else fit_uv(f'asls_{mode}',layers)
+            specs[f'asls_{mode}_uvarfs']={'layers':layers,'kind':'uvarfs','obj':obj}
+        for name in [f'asls_{mode}_raw',f'asls_{mode}_uvarfs']:
+            if name in specs:
+                specs[name]['asls_geometry']=selection
     seeds = cfg.get("random_baseline_seeds", [seed])
     if "asls_random" in cfg["methods"]:
         for rs in seeds:
@@ -152,5 +175,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
         elif k.startswith('randomk_uvarfs_seed'):
             base='randomk_uvarfs'
         if base in enabled:
+            if k in {'main','asls_raw','asls_pca'} or base=='asls_random':
+                v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
     return keep

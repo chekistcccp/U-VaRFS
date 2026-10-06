@@ -1,5 +1,7 @@
 # 原始研究协议下的实现修正（2026-10-06）
 
+本文保留 v4 实现与验证当时的交接记录。v4 已在服务器完成六数据集；后续分析与当前 v5 改进见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)，不能把以下历史验证边界当作当前状态。
+
 主线保持 **BMAD 全六数据集 + Frozen DINOv3 ViT-S+ 全层候选 + ASLS + U-VaRFS + normal memory exact cosine 1-NN**。
 
 这次修改属于数学统计实现纠错、求解精度、评价完整性和公平对照。ASLS 的 sigmoid/Adam 目标、U-VaRFS 的 representation/variability/L1 目标、beta、lambda grid、geometry tolerance 和所有采样/表示预算保持原样。没有用 anomaly labels、test AUROC 或 lesion masks 选择层、lambda 或超参数。

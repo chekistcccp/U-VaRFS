@@ -127,11 +127,11 @@ KerasHub Torch backend 直接读取本地 preset 的 `stage1...stage12`，DINOv3
 
 - `torch.inference_mode()`；
 - CUDA bf16（支持时）；
-- TF32 matmul/cudnn；
+- backbone 的 TF32 matmul/cudnn；ASLS/U-VaRFS 目标拟合使用 highest float32 matmul precision；
 - 一个 batch 一次提取所有 DINOv3 层，多 baseline 共享 forward；
 - ASLS/U-VaRFS 仅在采样的正常图像和 patch 上拟合；
 - U-VaRFS 使用 `H=(X^T X)⊙(X^T X)`，不构造大型 `N×N` Gram；
-- all-lambda batched GPU FISTA，使用保守 Lipschitz 上界与投影残差检查；
+- all-lambda batched GPU FISTA，保守 Lipschitz 上界、逐 lambda 动量重启与分开的残差/目标最优性/几何检查；
 - 统一 normal image/patch sampling 与 reservoir seed；
 - Torch CUDA exact cosine 1-NN，FAISS exact cosine fallback；
 - 预处理的 RSNA DICOM 和 Camelyon WSI 支持多进程。
@@ -139,13 +139,13 @@ KerasHub Torch backend 直接读取本地 preset 的 `stage1...stage12`，DINOv3
 ## 主要结果
 
 ```text
-results/gpu-eval-v4-protocol-fixes/<dataset>/metrics.csv
-results/gpu-eval-v4-protocol-fixes/all_metrics.csv
-results/gpu-eval-v4-protocol-fixes/summary_metrics.csv
-results/gpu-eval-v4-protocol-fixes/layer_selection.csv
+results/gpu-eval-v5-normal-audit/<dataset>/metrics.csv
+results/gpu-eval-v5-normal-audit/all_metrics.csv
+results/gpu-eval-v5-normal-audit/summary_metrics.csv
+results/gpu-eval-v5-normal-audit/layer_selection.csv
 ```
 
-`results_dir` 由配置决定；原始回传的 v3 结果保留在 `results/`。v4 的修正内容、重跑命令、mask 预检与统计/效率口径见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。
+`results_dir` 由配置决定；v3/v4 回传结果独立保留，不能与新版本混用。v5 默认仍是 pooled ASLS 主方法，原 28 方法加两项 patch geometry 消融，共 30 方法。数值诊断、运行顺序与统计/效率口径见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)；v4 数据/评价纠错历史见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。
 
 
 ## 固定压缩包入口
