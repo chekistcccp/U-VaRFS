@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v6-patch-asls
+results_dir: results/gpu-eval-v7-geometry-audit
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
@@ -25,6 +25,8 @@ data:
 
 asls:
   geometry_representation: patch
+  # The original main rule is retained; exhaustive search is an explicit ablation.
+  discrete_selection: gate_prefix
   geometry_tolerance: 0.05
   variability_weight: 0.15
   sparsity_weight: 0.02
@@ -63,6 +65,8 @@ methods:
   - randomk_uvarfs
   - asls_pooled_raw
   - asls_pooled_uvarfs
+  - asls_geometry_search_raw
+  - asls_geometry_search_uvarfs
 
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]
 

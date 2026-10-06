@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v6-patch-asls`**。经用户批准，主 ASLS 使用 normal patch geometry，保留 pooled Raw/U-VaRFS 消融；原 loss、无异常标签约束与统一预算保持。运行步骤和验证边界见 [PATCH_ASLS_UPGRADE.md](PATCH_ASLS_UPGRADE.md)。历史结果保持独立目录，尚未取得 v6 真实性能结果。
+> **当前实现版本：`gpu-eval-v7-geometry-audit`**。主 ASLS 保持已批准的 normal patch geometry 和原 gate-prefix 规则；增加正常几何组合搜索消融、U-VaRFS 预算后证书与固定支持集下界。原 loss、无异常标签约束、统一预算与所有原 baseline 保持。当前共 32 方法；步骤和验证边界见 [GEOMETRY_AUDIT.md](GEOMETRY_AUDIT.md)，patch 主输入批准记录见 [PATCH_ASLS_UPGRADE.md](PATCH_ASLS_UPGRADE.md)。新版真实性能仍需服务器验证。
 
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  

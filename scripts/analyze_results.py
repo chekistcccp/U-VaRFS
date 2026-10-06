@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only audit/report of the returned BMAD v4 run; labels are evaluation only.
+"""Read-only audit/report of a complete returned BMAD run; labels are evaluation only.
 
 No layer, lambda, representation budget or detector setting is selected here.
 The bootstrap compares the mean AUC of random seeds, not an ensemble score.
@@ -18,6 +18,22 @@ import pandas as pd
 
 DATASETS = ['brain','liver','resc','oct2017','xray','camelyon16']
 PIXEL_DATASETS = {'brain','liver','resc'}
+
+
+def source_hashes(folder):
+    return {p.relative_to(folder).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
+            for p in sorted(folder.rglob('*')) if p.is_file()}
+
+
+def validate_output(results, output):
+    if output.resolve().is_relative_to(results.resolve()) or results.resolve().is_relative_to(output.resolve()):
+        raise ValueError('analysis output must be outside the original results directory')
+    repo=Path(__file__).resolve().parents[1]
+    if output.resolve().is_relative_to(repo):
+        tracked=subprocess.check_output(['git','ls-files','--',output.resolve().relative_to(repo).as_posix()],
+                                        cwd=repo,text=True)
+        if tracked.strip():
+            raise ValueError('analysis output contains tracked historical artifacts; choose a new local reports directory')
 
 
 class WeightedRanking:
@@ -76,18 +92,16 @@ def markdown_table(frame, columns):
 
 
 def audit(results: Path, output: Path, draws: int):
-    if output.resolve().is_relative_to(results.resolve()):
-        raise ValueError('analysis output must be outside the original results directory')
+    validate_output(results,output)
+    hashes=source_hashes(results)
     df=pd.read_csv(results/'all_metrics.csv')
     if sorted(df.dataset.unique())!=sorted(DATASETS) or df.duplicated(['dataset','method']).any():
         raise ValueError('run must contain exactly six datasets without duplicate methods')
     versions=df.experiment_version.unique()
     if len(versions)!=1:
         raise ValueError('mixed experiment versions are not comparable')
-    if versions[0]!='gpu-eval-v4-protocol-fixes':
-        raise ValueError('this archived report template is specific to the returned v4 experiment')
     output.mkdir(parents=True,exist_ok=True)
-    summary_rows=[]; diagnostics=[]; paired_rows=[]; prevalence_rows=[]
+    summary_rows=[]; diagnostics=[]; paired_rows=[]; prevalence_rows=[]; lambda_rows=[]; zero_rows=[]
     config_hashes=set(); code_hashes=set(); revisions=set()
     for dataset in DATASETS:
         folder=results/dataset
@@ -116,6 +130,10 @@ def audit(results: Path, output: Path, draws: int):
         if len(predictions)!=progress['samples'] or predictions.image_path.duplicated().any():
             raise ValueError(f'{dataset}: prediction coverage mismatch')
         y=predictions.label.to_numpy(dtype=np.int64)
+        if set(np.unique(y))!={0,1} or cov['samples']!=len(y) or cov['abnormal']!=int((y==1).sum()):
+            raise ValueError(f'{dataset}: labels and mask coverage counts disagree')
+        if dataset in PIXEL_DATASETS and cov['matched_abnormal_masks']!=int((y==1).sum()):
+            raise ValueError(f'{dataset}: incomplete abnormal mask coverage')
         for _,row in source.iterrows():
             auroc,ap=WeightedRanking(y,predictions[row['method']]).metrics(np.ones(len(y)))
             np.testing.assert_allclose([auroc[0],ap[0]],[row.image_auroc,row.image_auprc],rtol=1e-10,atol=1e-10)
@@ -126,10 +144,26 @@ def audit(results: Path, output: Path, draws: int):
         if any('/good/' not in path.replace('\\','/').lower() for path in fit['normal_train_paths']):
             raise ValueError(f'{dataset}: fit manifest contains a non-normal path')
         cfg=meta['config']; seeds=cfg['random_baseline_seeds']
+        for manifest in [fit,memory]:
+            paths=manifest['normal_train_paths']; ids=manifest['normal_train_indices']
+            if len(paths)!=len(ids) or len(set(ids))!=len(ids) or any(
+                '/train/good/' not in '/'+path.replace('\\','/').lower() for path in paths):
+                raise ValueError(f'{dataset}: normal training manifest is inconsistent')
+        if (fit['fit_images']!=len(fit['normal_train_paths']) or fit['fit_images']>cfg['data']['fit_images'] or
+            fit['variability_images']!=min(cfg['data']['variability_images'],fit['fit_images']) or
+            fit['patches_per_image']!=cfg['data']['patches_per_image'] or
+            len(memory['normal_train_paths'])>cfg['data']['memory_images'] or
+            memory['memory_capacity']!=cfg['data']['memory_size'] or
+            set(memory['memory_rows'])!=set(source.method) or
+            not (source.memory_size==next(iter(memory['memory_rows'].values()))).all()):
+            raise ValueError(f'{dataset}: recorded normal data or memory budget differs from config')
         comparisons={'fixed4_raw':['fixed4_raw'],'asls_raw':['asls_raw'],
                      'randomk_raw':[f'randomk_raw_seed{s}' for s in seeds],
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
+        for method in ['asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs']:
+            if method in source.method.values:
+                comparisons[method]=[method]
         intervals=paired_bootstrap(predictions,comparisons,draws=draws)
         main=source.set_index('method').loc['main']
         for family,methods in comparisons.items():
@@ -142,12 +176,20 @@ def audit(results: Path, output: Path, draws: int):
                                 'image_positive_prevalence':float(y.mean()),'main_image_auprc':float(main.image_auprc)})
         a=json.loads((folder/'asls.json').read_text())
         uv=json.loads((folder/'uvarfs_main.json').read_text())
-        tail=uv['lambda_path'][-1]
+        selected=next(point for point in uv['lambda_path'] if point['lambda']==uv['lambda'])
+        lambda_rows.extend({'dataset':dataset,**point,'selected':point['lambda']==uv['lambda']}
+                           for point in uv['lambda_path'])
+        if 'zero_lambda_diagnostic' in uv:
+            zero_rows.append({'dataset':dataset,**uv['zero_lambda_diagnostic']})
         diagnostics.append({'dataset':dataset,'layers':a['selected_layers'],'layer_count':len(a['selected_layers']),
                             'feature_dim':int(main.feature_dim),'asls_geometry_error':a['geometry_error'],
                             **a['diagnostics'], 'uvarfs_geometry_error':uv['geometry_error'],
                             'uvarfs_feasible':uv['feasible'],'uvarfs_converged':uv['solver_converged'],
-                            'projected_residual':uv['projected_residual'],'relative_change':tail['relative_change'],
+                            'asls_feasible':a['feasible'],
+                            'geometry_representation':a['geometry_representation'],
+                            'projected_residual':uv['projected_residual'],'relative_change':selected['relative_change'],
+                            'objective_converged':uv.get('objective_converged'),
+                            'box_optimality_gap':uv.get('box_optimality_gap'),
                             'lambda':uv['lambda'],'iterations':uv['solver_iterations'],
                             'mask_coverage':{k:len(v) if isinstance(v,list) else v for k,v in cov.items()},
                             'config':cfg})
@@ -172,10 +214,12 @@ def audit(results: Path, output: Path, draws: int):
     summary.to_csv(output/'family_summary.csv',index=False)
     pd.DataFrame(paired_rows).to_csv(output/'paired_auc_differences.csv',index=False)
     pd.DataFrame(prevalence_rows).to_csv(output/'image_prevalence.csv',index=False)
+    pd.DataFrame(lambda_rows).to_csv(output/'main_lambda_path.csv',index=False)
+    pd.DataFrame(zero_rows).to_csv(output/'zero_lambda_diagnostics.csv',index=False)
     shutil.copyfile(results/'all_metrics.csv',output/'all_metrics.csv')
     shutil.copyfile(results/'layer_selection.csv',output/'layer_selection.csv')
-    hashes={str(p.relative_to(results)).replace('\\','/'):hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(results.rglob('*')) if p.is_file()}
+    if source_hashes(results)!=hashes:
+        raise ValueError('original experiment artifacts changed during the audit')
     data={'experiment_version':versions[0],'git_revision':next(iter(revisions)),
           'config_fingerprint':next(iter(config_hashes)),'code_fingerprint':next(iter(code_hashes)),
           'rows':len(df),'diagnostics':diagnostics,'source_sha256':hashes,
@@ -196,7 +240,89 @@ def audit(results: Path, output: Path, draws: int):
     except (OSError,subprocess.CalledProcessError):
         data['git_blob_code_verified']=False
     (output/'analysis_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    write_report(output,df,summary,pd.DataFrame(paired_rows),pd.DataFrame(prevalence_rows),data)
+    report=write_report if versions[0]=='gpu-eval-v4-protocol-fixes' else write_current_report
+    report(output,df,summary,pd.DataFrame(paired_rows),pd.DataFrame(prevalence_rows),data)
+
+
+def write_current_report(output,df,summary,paired,prevalence,data):
+    main=df[df.method=='main'].set_index('dataset').loc[DATASETS]
+    macro=summary.groupby('method_family').image_auroc_mean.mean().sort_values(ascending=False)
+    table=main[['selected_layers','feature_dim','image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']].reset_index()
+    for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
+        table[column]=table[column].map(lambda x:f'{100*x:.2f}' if pd.notna(x) else 'n.a.')
+    comparison=pd.DataFrame({'dataset':DATASETS})
+    families=['main','asls_pooled_uvarfs','asls_raw','fixed4_raw','all_raw','randomk_raw','asls_random','asls_pca']
+    wins={}
+    for family in families:
+        if family not in macro:
+            continue
+        rows=summary[summary.method_family==family].set_index('dataset').loc[DATASETS]
+        comparison[family]=[f'{100*r.image_auroc_mean:.2f} ± {100*r.image_auroc_std:.2f}' if r.runs>1 else
+                            f'{100*r.image_auroc_mean:.2f}' for _,r in rows.iterrows()]
+        wins[family]=int((main.image_auroc>rows.image_auroc_mean).sum())
+    diagnostic=pd.DataFrame([{'dataset':d['dataset'],'layers':d['layer_count'],
+        'ASLS_error':d['asls_geometry_error'],'ASLS_feasible':d['asls_feasible'],
+        'UVarFS_error':d['uvarfs_geometry_error'],'UVarFS_feasible':d['uvarfs_feasible'],
+        'continuous_objective_converged':d['objective_converged'],'continuous_box_gap':d['box_optimality_gap'],
+        'selected_lambda':d['lambda']} for d in data['diagnostics']])
+    gate_diagnostic=pd.DataFrame([{'dataset':d['dataset'],
+        'consensus_gram_off_diagonal_mean':d['consensus_off_diagonal_mean'],
+        'gate_probability_span':d['probability_span'],
+        'gate_variability_rank_correlation':d['gate_variability_rank_correlation'],
+        'gates_near_all_open':d['gates_near_all_open']} for d in data['diagnostics']])
+    lambda_path=pd.read_csv(output/'main_lambda_path.csv')
+    budget_rows=[]
+    for dataset,group in lambda_path.groupby('dataset',sort=False):
+        point=group.loc[group['lambda'].idxmin()]
+        budget_rows.append({'dataset':dataset,'min_lambda':point['lambda'],
+            'continuous_active_features':point.continuous_active_features,
+            'continuous_geometry_error':point.continuous_geometry_error,
+            'retained_features':point.retained_features,'budgeted_geometry_error':point.geometry_error})
+    pairs=paired[['dataset','comparison','delta_auroc','ci95_lower','ci95_upper']].copy()
+    for column in ['delta_auroc','ci95_lower','ci95_upper']:
+        pairs[column]=pairs[column].map(lambda x:f'{100*x:+.2f}')
+    efficiency=main[['selected_layer_count','feature_dim','candidate_dim','compression_ratio','memory_size',
+        'memory_vector_fp16_mib','matching_and_aggregation_seconds','fit_seconds','memory_seconds','eval_seconds','peak_gpu_gb']].reset_index()
+    efficiency['compression_ratio']*=100
+    efficiency=efficiency.round(3)
+    lines=['# BMAD 回传实验分析','',
+        f'版本：`{data["experiment_version"]}`；六数据集共 {data["rows"]} 行。Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS 的无异常标签医学异常检测研究主线保持。','',
+        f'Main Macro Image AUROC={100*macro["main"]:.2f}%，Fixed-4 Raw={100*macro["fixed4_raw"]:.2f}%，同 K Random Raw 五 seeds 均值={100*macro["randomk_raw"]:.2f}%。Main 在 {wins["fixed4_raw"]}/6 数据集高于 Fixed-4，在 {wins["randomk_raw"]}/6 高于 Random-K 均值。','']
+    if 'asls_pooled_uvarfs' in macro:
+        lines.extend([f'同轮 Main 比 pooled U-VaRFS 的 macro AUROC 高 {100*(macro["main"]-macro["asls_pooled_uvarfs"]):.2f} 个百分点。它比较 normal geometry 输入及其产生的选层；跨版本差异还含数值实现变化，不全部归因于 patch。',''])
+    lines.extend(['## 来源与完整性','',
+        f'Git `{data["git_revision"]}`；code `{data["code_fingerprint"]}`；config `{data["config_fingerprint"]}`。六份元数据一致，源码 Git blobs 验证结果：{data["git_blob_code_verified"]}。',
+        '全局/逐数据集 CSV 一致；全部逐图 AUROC/AP 独立重算一致，family mean/sample SD 一致；正常 fit/memory manifest 与共享抽样预算通过核查。来源 SHA256 在 analysis_data.json，审计前后未改变原文件。',
+        'Brain/Liver/RESC 异常 masks 完整；其余数据集无 pixel 指标。所有标签仅用于评价，没有用 test AUROC 选层、lambda、维度或 detector。', '',
+        '## 主结果','', '指标均为百分数；不以高 Pixel AUROC 替代 Pixel AP/AUPRO。','',
+        markdown_table(table,table.columns.tolist()),'', '![Performance](performance.png)','',
+        '## 同轮公平比较','', 'Random 项均纳入全部五 seeds，报告 mean ± sample SD；Random-K 的 K 与 Main 相同。','',
+        markdown_table(comparison,comparison.columns.tolist()),'',
+        f'在相同 ASLS 层输入下，U-VaRFS 在 {wins["asls_raw"]}/6 数据集高于 Raw，在 {wins["asls_random"]}/6 高于同维度 Random feature 均值，在 {wins["asls_pca"]}/6 高于 PCA。不能据此宣称全部数据集优于固定层或 PCA。','',
+        f'配对差值为 Main 减 baseline，单位百分点。{data["bootstrap_draws"]} 次按正常/异常分层的 image bootstrap；每次 draw 内取各 seed AUC 均值，不将 seed 预测均值当作 ensemble。','',
+        markdown_table(pairs,pairs.columns.tolist()),'',
+        '未提供患者/slide 分组，区间仅以图像为抽样单位；没有多重比较校正或预设非劣界值，不宣称患者级显著性或非劣。','',
+        '## 正常训练几何与数值诊断','',markdown_table(diagnostic.round(8),diagnostic.columns.tolist()),'',
+        'ASLS feasible 与 U-VaRFS feasible 分别对应实际预算后表示。若全部 ASLS 选满 6 层且误差仍高于 0.05，则当前 gate 前缀没有找到预算内可行集合；这不证明所有层组合都不可行。连续 gates 接近全开，其微小排序差异不等于成功的自适应稀疏。','',
+        markdown_table(gate_diagnostic.round(6),gate_diagnostic.columns.tolist()),'',
+        'continuous_objective_converged/box gap 对应截断前的完整连续权重，不能用来证明截断后的表示优化充分。完整 lambda path 见 main_lambda_path.csv，lambda=0 只作为诊断，见 zero_lambda_diagnostics.csv，不参与选解。', '',
+        '下表是既定 path 最小 lambda 的连续解与实际预算后几何误差，不用于增改 lambda grid。','',
+        markdown_table(pd.DataFrame(budget_rows).round(6),list(budget_rows[0])), '',
+        '连续解较好、Top-weight 截断后误差增大，说明预算/支持集截断值得单独诊断；连续解也不可行则还可能涉及既定 variability 正则与输入几何。不能仅提高迭代数、放宽容差或用测试结果挑 beta/lambda。', '',
+        '## 按原主线实施的修改','',
+        'v7 保留 patch 主输入和原 gate-prefix 主离散规则；正常 Gram 内积 Q 保存为小矩阵，用同一组已学 gates 增加 geometry-search Raw/U-VaRFS 消融。搜索 2–6 层组合，先取可行的最少层，再取 gate 分数最高者；无可行集合时取最小几何误差并明确标记失败。主规则升级另需明确批准，不以本轮 test 标签选择方法。','',
+        'U-VaRFS 目标、beta/lambda、维度与数据预算不变，新增预算后原目标值/box gap 与固定支持集几何下界。H 元素非负，因此在固定支持集上将允许权重设为 1 可得其最小几何误差；这不是全体 256 维组合的最优性证明，不作为新的选解候选。', '',
+        '## 压缩与效率','',
+        'compression_ratio 包含层与特征两次裁剪，以全层 candidate_dim 为分母；仅 U-VaRFS 压缩需以选中层维度为分母。memory_vector_fp16_mib 是该方法向量容量；matching 时间只包含 NN 与 Top-K，不是全部方法总耗时。fit/memory/eval/peak 是共享整套方法开销，不能重复计作单方法耗时或宣称 backbone 加速。','',
+        markdown_table(efficiency,efficiency.columns.tolist()),'',
+        '## 类别比例','',markdown_table(prevalence.round(6),prevalence.columns.tolist()),'',
+        'Image AP 需结合异常比例解释，尤其 X-ray 异常比例很高。','',
+        '## 复跑边界','',
+        '新结果写入独立 v7 目录，旧结果不覆盖/混合。服务器先验证 Liver 正常拟合、消融、manifest 和 pixel 指标，再运行全部 BMAD 六数据集。当前工作机缺少真实数据/模型与 CUDA PyTorch，本地数学/CPU fixture 检查不能证明新版真实性能。代码按默认设置提交推送，本报告和所有实验产物只留本地。',''])
+    if 'brain' in main.index and 'fixed4_raw' in macro:
+        fixed=df[(df.dataset=='brain')&(df.method=='fixed4_raw')].iloc[0]
+        lines[5:5]=[f'Brain 是明确短板：Main Image AUROC={100*main.loc["brain","image_auroc"]:.2f}% vs Fixed-4 {100*fixed.image_auroc:.2f}%；Pixel AP={100*main.loc["brain","pixel_auprc"]:.2f}% vs {100*fixed.pixel_auprc:.2f}%。','']
+    (output/'analysis.md').write_text('\n'.join(lines),encoding='utf-8')
 
 
 def write_report(output,df,summary,paired,prevalence,data):
@@ -283,6 +409,8 @@ def plot(output):
     import matplotlib.pyplot as plt
     family=pd.read_csv(output/'family_summary.csv')
     order=['main','asls_raw','fixed4_raw','all_raw','randomk_raw','randomk_uvarfs','asls_random','asls_pca']
+    if 'asls_pooled_uvarfs' in family.method_family.values:
+        order.insert(1,'asls_pooled_uvarfs')
     figure,axes=plt.subplots(1,2,figsize=(15,6),gridspec_kw={'width_ratios':[1.5,1]})
     values=family.pivot(index='method_family',columns='dataset',values='image_auroc_mean').loc[order,DATASETS]*100
     im=axes[0].imshow(values.to_numpy(),vmin=40,vmax=100,cmap='viridis',aspect='auto')

@@ -129,7 +129,7 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
                    **{k:v.cpu().tolist() for k,v in certificate.items()}}
 
 
-def _select_solution(W, H, lambdas, cfg, solver):
+def _select_solution(W, H, lambdas, cfg, solver, objective_args=None):
     """Apply the feature budget to EVERY path point before checking geometry.
 
     Feasibility refers to the representation actually used by cosine matching,
@@ -157,6 +157,19 @@ def _select_solution(W, H, lambdas, cfg, solver):
     difference=1-retained
     original_error=torch.sqrt(((original*(H @ original)).sum(0)/base).clamp_min(0)).cpu().tolist()
     errors=torch.sqrt(((difference*(H @ difference)).sum(0)/base).clamp_min(0)).cpu().tolist()
+    # H is entrywise nonnegative. On this fixed support, unit weights minimize
+    # geometry error over the box, independent of beta/lambda. This is a lower
+    # bound for this support only, not for every possible max_features subset.
+    support=torch.zeros_like(W)
+    for j,active in enumerate(indices):
+        support[active,j]=1
+    missing=1-support
+    support_floor=torch.sqrt(((missing*(H @ missing)).sum(0)/base).clamp_min(0)).cpu().tolist()
+    budget_certificate={}
+    if objective_args is not None:
+        P,beta,rscale=objective_args
+        budget_certificate={k:v.cpu().tolist() for k,v in
+            _objective_certificate(retained,H,P,beta,rscale,lambdas).items()}
     nonzero=(retained>0).sum(0).cpu().tolist()
     path=[]
     for j,lam in enumerate(lambdas):
@@ -164,6 +177,8 @@ def _select_solution(W, H, lambdas, cfg, solver):
                      'retained_features':len(indices[j]),'nonzero_features':nonzero[j],
                      'continuous_geometry_error':original_error[j],
                      'geometry_error':errors[j],
+                     'fixed_support_geometry_floor':support_floor[j],
+                     'fixed_support_can_meet_tolerance':support_floor[j]<=tolerance,
                      'feasible':errors[j]<=tolerance and nonzero[j]>=minf,
                      'relative_change':solver['relative_change'][j],
                      'projected_residual':solver['projected_residual'][j],
@@ -172,6 +187,11 @@ def _select_solution(W, H, lambdas, cfg, solver):
                       'box_optimality_gap','objective_converged','restart_counts']:
             if field in solver:
                 path[-1][field]=solver[field][j]
+        path[-1]['objective_certificate_scope']='continuous_full_weights'
+        for field,values in budget_certificate.items():
+            path[-1]['budgeted_'+field]=values[j]
+        if budget_certificate:
+            path[-1]['budgeted_objective_converged']=budget_certificate['box_optimality_gap'][j]<=float(cfg.get('tol',1e-5))
     feasible=[j for j,p in enumerate(path) if p['feasible']]
     chosen=min(feasible,key=lambda j:(len(indices[j]),errors[j])) if feasible else min(range(len(path)),key=lambda j:errors[j])
     return chosen,indices[chosen],retained[:,chosen],path
@@ -219,7 +239,7 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
         check_every=check_every,log_every=log_every,label=label
     )
 
-    chosen,active,final_w,path=_select_solution(W,H,lambdas,cfg,solver)
+    chosen,active,final_w,path=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale))
     lam=lambdas[chosen]
     w=W[:,chosen]
     geom_final=path[chosen]['geometry_error']
@@ -256,13 +276,17 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
         'box_optimality_gap':path[chosen]['box_optimality_gap'],
         'objective_converged':path[chosen]['objective_converged'],
         'momentum_restarts':path[chosen]['restart_counts'],
+        'objective_certificate_scope':'continuous_full_weights',
+        'fixed_support_geometry_floor':path[chosen]['fixed_support_geometry_floor'],
+        'fixed_support_can_meet_tolerance':path[chosen]['fixed_support_can_meet_tolerance'],
+        **{k:v for k,v in path[chosen].items() if k.startswith('budgeted_')},
     }
     # Diagnostic only: never extend the selected lambda path or tune beta.
     if not result['feasible'] and cfg.get('diagnose_infeasible',False):
         diagnostic_W,_,_,diagnostic_solver=_batched_fista(
             H,P,beta,rscale,[0.0],max_iter,tol,check_every,log_every,
             label=f'{label}:lambda0-diagnostic')
-        _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver)
+        _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale))
         result['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
     return result
 

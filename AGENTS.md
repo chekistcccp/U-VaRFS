@@ -799,7 +799,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v6-patch-asls
+gpu-eval-v7-geometry-audit
 ```
 
 原因：
@@ -917,7 +917,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v6-patch-asls
+experiment_version = gpu-eval-v7-geometry-audit
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1226,7 +1226,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 30. 2026-10-06 用户批准 patch 主方法（当前状态）
+# 30. 2026-10-06 用户批准 patch 主方法（v6 历史记录）
 
 用户明确指令：**“批准修改patch主方法”**。该批准已落实，无需再次询问同一切换的权限。
 
@@ -1240,3 +1240,17 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - v4/v5 产物及回传文件不改写，旧版本不能 resume 到 v6。比较输入作用优先用 v6 同轮 Main 与 pooled 消融，不能将 v4→v6 的所有差异都归因于 patch。
 
 42 项本地数学/CPU fixture 回归检查通过；真实 BMAD 数据、模型和 CUDA PyTorch 仍不在本工作机，尚无 v6 真实性能。先在服务器验证 Liver：`SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`，看到 patch Main、pooled 消融、normal-only manifest 和 pixel 指标正常后再全六。
+
+---
+
+# 31. v7 正常几何与预算诊断（当前开发状态）
+
+当前版本 `gpu-eval-v7-geometry-audit`；新输出目录 `results/gpu-eval-v7-geometry-audit/`。开发与复跑说明见 [GEOMETRY_AUDIT.md](GEOMETRY_AUDIT.md)。实验分析按第 28 节仅保留本地，新结果不得覆盖旧目录。
+
+- Main 保持已批准的 normal patch 输入及原 gate-prefix 规则；原 sigmoid/Adam/loss、ASLS 层预算/容差、U-VaRFS 目标与选解、beta/lambda、全部统一数据预算、Frozen backbone 和 cosine 1-NN 不变。
+- 保存正常 Gram 内积 Q；新增 `asls_geometry_search_raw` / `asls_geometry_search_uvarfs` 消融，复用原正常数据与已学 gates，在 2–6 层预算内检查组合可行性。保留原 30 方法与全部 seeds，共 32 方法。
+- 组合搜索目前不作为 Main。现有 patch 批准不涵盖新的离散规则；若用户明确批准升级，须保留 `asls_gate_prefix_raw` / `asls_gate_prefix_uvarfs` 对照并单独记录方法升级，不得据测试表现择优切换。
+- U-VaRFS 原 objective/box gap 的作用范围明确为完整连续权重；新增实际预算后原目标证书、固定支持集几何下界。这些仅为诊断，不改变权重、支持集、lambda 选择或 detector；不能将固定支持集下界误写成全部特征组合的下界。
+- 分析脚本重算 AUROC/AP、mean/sample SD、配对图像区间与来源/预算审计，拒绝覆盖原产物或已跟踪的历史报告。实际报告/图表仍在忽略目录，仅代码和开发文档同步。
+
+50 项本地数学/CPU 流程回归检查、shell 语法与 diff 检查通过；真实数据、模型与 CUDA PyTorch 不在本机，未验证 v7 性能。服务器先验证 Liver，再 BMAD 六数据集：`SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`。

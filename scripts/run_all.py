@@ -180,6 +180,7 @@ def main():
                 asls_geometry_feasible=spec.get('asls_geometry',{}).get('feasible'),
                 asls_geometry_representation=spec.get('asls_geometry',{}).get('geometry_representation'),
                 asls_geometry_error=spec.get('asls_geometry',{}).get('geometry_error'),
+                asls_discrete_selection=spec.get('asls_geometry',{}).get('discrete_selection'),
             )
             if spec['kind']=='uvarfs':
                 r.update(uvarfs_geometry_error=spec['obj']['geometry_error'],
@@ -188,7 +189,13 @@ def main():
                          uvarfs_selected_lambda=spec['obj']['lambda'],
                          uvarfs_objective=spec['obj']['objective'],
                          uvarfs_box_optimality_gap=spec['obj']['box_optimality_gap'],
-                         uvarfs_objective_converged=spec['obj']['objective_converged'])
+                         uvarfs_objective_converged=spec['obj']['objective_converged'],
+                         uvarfs_objective_certificate_scope=spec['obj']['objective_certificate_scope'],
+                         uvarfs_budgeted_objective=spec['obj']['budgeted_objective'],
+                         uvarfs_budgeted_box_optimality_gap=spec['obj']['budgeted_box_optimality_gap'],
+                         uvarfs_budgeted_objective_converged=spec['obj']['budgeted_objective_converged'],
+                         uvarfs_fixed_support_geometry_floor=spec['obj']['fixed_support_geometry_floor'],
+                         uvarfs_fixed_support_can_meet_tolerance=spec['obj']['fixed_support_can_meet_tolerance'])
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)

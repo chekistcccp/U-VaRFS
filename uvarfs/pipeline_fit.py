@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from .data import BMADDataset
 from .perturb import perturb_batch, PERTURBATIONS
-from .asls import fit_asls
+from .asls import fit_asls, reselect_asls
 from .u_varfs import fit_uvarfs
 from .transforms import fit_pca
 from .utils import save_json
@@ -94,8 +94,17 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
     for mode,result in comparisons.items():
         save_json(result,dataset_out/f'asls_{mode}.json')
     # Keep only selection metadata here; optimizer traces live in separate files.
-    asls['geometry_comparisons']={mode:{k:result[k] for k in ['selected_layers','geometry_error','feasible','geometry_representation']}
+    asls['geometry_comparisons']={mode:{k:result[k] for k in ['selected_layers','geometry_error','feasible','geometry_representation','discrete_selection']}
                                   for mode,result in comparisons.items()}
+    asls['selection_comparisons']={}
+    for rule in ['gate_prefix','geometry_search']:
+        if any(method.startswith(f'asls_{rule}_') for method in cfg['methods']):
+            selection=reselect_asls(asls,cfg['asls'],rule)
+            print(f'[fit] ASLS {rule} ablation: evaluated={selection["evaluated_subsets"]} '
+                  f'layers={selection["selected_layers"]} feasible={selection["feasible"]}',flush=True)
+            save_json(selection,dataset_out/f'asls_{rule}.json')
+            asls['selection_comparisons'][rule]={k:selection[k] for k in
+                ['selected_layers','geometry_error','feasible','geometry_representation','discrete_selection']}
     print(f"[fit] ASLS done: selected_layers={asls['selected_layers']} geometry_error={asls['geometry_error']:.4f}", flush=True)
     save_json(asls, dataset_out / "asls.json")
     return patches, var_vectors, asls
@@ -146,6 +155,15 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
         for name in [f'asls_{mode}_raw',f'asls_{mode}_uvarfs']:
             if name in specs:
                 specs[name]['asls_geometry']=selection
+    for rule,selection in asls['selection_comparisons'].items():
+        layers=selection['selected_layers']
+        for kind in ['raw','uvarfs']:
+            name=f'asls_{rule}_{kind}'
+            if name in enabled:
+                spec={'layers':layers,'kind':kind,'asls_geometry':selection}
+                if kind=='uvarfs':
+                    spec['obj']=main_uv if layers==selected else fit_uv(f'asls_{rule}',layers)
+                specs[name]=spec
     seeds = cfg.get("random_baseline_seeds", [seed])
     if "asls_random" in cfg["methods"]:
         for rs in seeds:

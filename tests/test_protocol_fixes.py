@@ -297,11 +297,20 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     extractor = TinyFrozenExtractor()
     specs = fit_method_specs(extractor,train,cfg,output)
     assert sorted(specs) == expected_method_names(cfg)
-    assert len(specs) == 30
+    assert len(specs) == 32
     fitted=json.loads((output/'asls.json').read_text())
     assert fitted['geometry_representation']==geometry_representation
     assert fitted['diagnostics']['normal_geometry_samples']==(16 if geometry_representation=='patch' else 4)
     assert specs['main']['layers']==fitted['selected_layers']
+    assert fitted['discrete_selection']=='gate_prefix'
+    search=json.loads((output/'asls_geometry_search.json').read_text())
+    for kind in ['raw','uvarfs']:
+        assert specs[f'asls_geometry_search_{kind}']['layers']==search['selected_layers']
+        assert specs[f'asls_geometry_search_{kind}']['asls_geometry']['discrete_selection']=='geometry_search'
+    uv=specs['main']['obj']
+    assert uv['objective_certificate_scope']=='continuous_full_weights'
+    assert 'budgeted_box_optimality_gap' in uv
+    assert uv['fixed_support_geometry_floor']<=uv['geometry_error']+1e-6
     assert specs['main']['asls_geometry']['geometry_representation']==geometry_representation
     assert json.loads((output/'uvarfs_main.json').read_text())['layers']==fitted['selected_layers']
     comparison_mode='pooled' if geometry_representation=='patch' else 'patch'

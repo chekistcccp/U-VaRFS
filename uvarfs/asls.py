@@ -3,6 +3,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import time
+from itertools import combinations
 from scipy.stats import rankdata
 from .numerics import precise_matmul
 
@@ -42,6 +43,61 @@ class LayerGramGeometry:
         difference=-self.reference.clone()
         difference[indices]+=1/len(indices)
         return self.error(difference)
+
+
+def select_layer_subset(layers, probabilities, inner_products, cfg, rule='gate_prefix'):
+    """Discrete normal-geometry selection; exhaustive search is an explicit ablation.
+
+    Q[l,m]=<K_l,K_m> is sufficient to evaluate every equal-weight subset.
+    Gates, loss, perturbations and sample budget are shared across both rules.
+    """
+    if rule not in {'gate_prefix','geometry_search'}:
+        raise ValueError('ASLS discrete_selection must be gate_prefix or geometry_search')
+    q=np.asarray(inner_products,dtype=np.float64)
+    probabilities=np.asarray(probabilities,dtype=np.float64)
+    n=len(layers)
+    minimum=int(cfg.get('min_layers',2)); maximum=min(int(cfg.get('max_layers',6)),n)
+    if q.shape!=(n,n) or probabilities.shape!=(n,) or not 1<=minimum<=maximum:
+        raise ValueError('invalid discrete ASLS geometry or layer budget')
+    reference=np.full(n,1/n)
+    denominator=max(float(reference@q@reference),1e-16)
+    tolerance=float(cfg.get('geometry_tolerance',.05))
+    order=np.argsort(-probabilities,kind='stable')
+    path=[]; chosen=None
+    for k in range(minimum,maximum+1):
+        candidates=[tuple(order[:k])] if rule=='gate_prefix' else list(combinations(range(n),k))
+        weights=np.full((len(candidates),n),-1/n,dtype=np.float64)
+        for row,ids in enumerate(candidates):
+            weights[row,list(ids)]+=1/k
+        errors=np.sqrt(np.maximum(np.einsum('bi,ij,bj->b',weights,q,weights),0)/denominator)
+        points=[{'layer_count':k,'layers':[layers[i] for i in ids],
+                 'geometry_error':float(error),'feasible':bool(error<=tolerance),
+                 'gate_score':float(probabilities[list(ids)].sum())}
+                for ids,error in zip(candidates,errors)]
+        path.extend(points)
+        feasible=[point for point in points if point['feasible']]
+        if feasible:
+            chosen=min(feasible,key=lambda p:(-p['gate_score'],p['geometry_error'],p['layers']))
+            break
+    if chosen is None:
+        # Preserve the original prefix fallback. Search uses its best budgeted geometry.
+        chosen=path[-1] if rule=='gate_prefix' else min(path,key=lambda p:(p['geometry_error'],-p['gate_score'],p['layer_count'],p['layers']))
+    # Preserve gate order for feature concatenation in both variants.
+    selected=[layers[i] for i in order if layers[i] in chosen['layers']]
+    return {'selected_layers':selected,'geometry_error':chosen['geometry_error'],
+            'feasible':chosen['feasible'],'discrete_selection':rule,
+            'selection_reason':'minimum_layers_feasible' if chosen['feasible'] else
+                ('maximum_prefix_fallback' if rule=='gate_prefix' else 'minimum_geometry_error_fallback'),
+            'selection_path':path,'evaluated_subsets':len(path)}
+
+
+def reselect_asls(result, cfg, rule):
+    """Reuse the exact fitted normal geometry and gates for a controlled ablation."""
+    saved=result['normal_gram_geometry']
+    layers=saved['layers']
+    return {**select_layer_subset(layers,[result['probabilities'][str(l)] for l in layers],
+                                 saved['inner_products'],cfg,rule),
+            'geometry_representation':result['geometry_representation']}
 
 
 @precise_matmul()
@@ -126,7 +182,9 @@ def fit_asls(layer_features: dict[int, torch.Tensor], layer_variability: dict[in
     saturated=bool(np.min(probs)>0.98)
     if saturated:
         print('[asls] diagnostic: gates near all-open; preserve objective and inspect normal geometry/gradient trace',flush=True)
-    return {
+    q=(geometry.inner_products if geometry is not None else
+       grams.flatten(1).double()@grams.flatten(1).double().T).detach().cpu().tolist()
+    result={
         "selected_layers": selected,
         "geometry_representation":representation,
         "probabilities": {str(l): float(probs[i]) for i,l in enumerate(layers)},
@@ -136,6 +194,8 @@ def fit_asls(layer_features: dict[int, torch.Tensor], layer_variability: dict[in
         "selection_path":selection_path,
         "optimizer_trace":history,
         "fit_seconds":time.perf_counter()-t0,
+        "normal_gram_geometry":{'layers':layers,'inner_products':q,
+                                'definition':'Q[l,m]=<K_l,K_m>; reference=mean(all K_l)'},
         "diagnostics":{'gates_near_all_open':saturated,'probability_span':float(np.ptp(probs)),
                        'gate_variability_rank_correlation':correlation,
                        'consensus_off_diagonal_mean':off_mean,
@@ -145,3 +205,11 @@ def fit_asls(layer_features: dict[int, torch.Tensor], layer_variability: dict[in
                        'representation':'normal_patch_cosine_gram' if representation=='patch' else 'normal_mean_pooled_cosine_gram',
                        'matmul_precision':'highest'},
     }
+    rule=cfg.get('discrete_selection','gate_prefix')
+    if rule=='gate_prefix':
+        # Retain the original device calculation and stopping rule for main.
+        result.update(discrete_selection=rule,evaluated_subsets=len(selection_path),
+                      selection_reason='minimum_layers_feasible' if result['feasible'] else 'maximum_prefix_fallback')
+    else:
+        result.update(reselect_asls(result,cfg,rule))
+    return result
