@@ -139,13 +139,13 @@ KerasHub Torch backend 直接读取本地 preset 的 `stage1...stage12`，DINOv3
 ## 主要结果
 
 ```text
-results/gpu-eval-v5-normal-audit/<dataset>/metrics.csv
-results/gpu-eval-v5-normal-audit/all_metrics.csv
-results/gpu-eval-v5-normal-audit/summary_metrics.csv
-results/gpu-eval-v5-normal-audit/layer_selection.csv
+results/gpu-eval-v6-patch-asls/<dataset>/metrics.csv
+results/gpu-eval-v6-patch-asls/all_metrics.csv
+results/gpu-eval-v6-patch-asls/summary_metrics.csv
+results/gpu-eval-v6-patch-asls/layer_selection.csv
 ```
 
-`results_dir` 由配置决定；v3/v4 回传结果独立保留，不能与新版本混用。v5 默认仍是 pooled ASLS 主方法，原 28 方法加两项 patch geometry 消融，共 30 方法。数值诊断、运行顺序与统计/效率口径见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)；v4 数据/评价纠错历史见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。
+`results_dir` 由配置决定；v3/v4/v5 结果独立保留，不能与新版本混用。v6 经用户批准以 normal patch geometry 为主 ASLS 输入，原 28 方法加两项 pooled 消融，共 30 方法。批准范围、运行顺序和验证边界见 [PATCH_ASLS_UPGRADE.md](PATCH_ASLS_UPGRADE.md)；v5 数值诊断记录见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)，v4 数据/评价纠错历史见 [PROTOCOL_FIXES.md](PROTOCOL_FIXES.md)。
 
 
 ## 固定压缩包入口

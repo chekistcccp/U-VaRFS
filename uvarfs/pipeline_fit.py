@@ -77,12 +77,12 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
                'patches_per_image':ppi,'sampled_patches':patch_manifest,
                'variability_definition':'global_mean_squared_delta/(global_population_variance+epsilon)',
                'variability_epsilon':float(cfg['data'].get('variability_epsilon',1e-6)),
-               'asls_geometry_representation':cfg['asls'].get('geometry_representation','pooled'),
+               'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                'perturbations':list(PERTURBATIONS),
                'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},
               dataset_out/'fit_manifest.json')
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
-    representation=cfg['asls'].get('geometry_representation','pooled')
+    representation=cfg['asls'].get('geometry_representation','patch')
     inputs={'pooled':pooled,'patch':patches}
     print(f"[fit] ASLS start: geometry={representation} layers={len(pooled)} samples={next(iter(inputs[representation].values())).shape[0]}", flush=True)
     asls = fit_asls(inputs[representation], layer_var, cfg["asls"])

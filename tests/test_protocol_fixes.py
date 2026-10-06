@@ -273,9 +273,10 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     cfg['data'].update(fit_images=4,variability_images=4,patches_per_image=4,
                        memory_images=4,memory_patches_per_image=4,memory_size=5,test_batch_size=2)
     cfg['asls'].update(steps=10,geometry_tolerance=.8)
-    cfg['asls']['geometry_representation']=geometry_representation
-    if geometry_representation=='patch':
-        cfg['methods']=[name.replace('asls_patch_','asls_pooled_') for name in cfg['methods']]
+    # The patch case uses the production default; the pooled case is an explicit ablation.
+    if geometry_representation=='pooled':
+        cfg['asls']['geometry_representation']='pooled'
+        cfg['methods']=[name.replace('asls_pooled_','asls_patch_') for name in cfg['methods']]
     cfg['uvarfs'].update(min_features=2,max_features=4,max_iter=400,
                          lambda_grid=[.01,.0001,.000001],geometry_tolerance=.8)
     cfg['eval'].update(bootstrap_samples=0,max_heatmaps_per_dataset=2)
@@ -297,11 +298,26 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     specs = fit_method_specs(extractor,train,cfg,output)
     assert sorted(specs) == expected_method_names(cfg)
     assert len(specs) == 30
+    fitted=json.loads((output/'asls.json').read_text())
+    assert fitted['geometry_representation']==geometry_representation
+    assert fitted['diagnostics']['normal_geometry_samples']==(16 if geometry_representation=='patch' else 4)
+    assert specs['main']['layers']==fitted['selected_layers']
+    assert specs['main']['asls_geometry']['geometry_representation']==geometry_representation
+    assert json.loads((output/'uvarfs_main.json').read_text())['layers']==fitted['selected_layers']
+    comparison_mode='pooled' if geometry_representation=='patch' else 'patch'
+    comparison=json.loads((output/f'asls_{comparison_mode}.json').read_text())
+    assert comparison['diagnostics']['normal_geometry_samples']==(4 if comparison_mode=='pooled' else 16)
+    for kind in ['raw','uvarfs']:
+        spec=specs[f'asls_{comparison_mode}_{kind}']
+        assert spec['layers']==comparison['selected_layers']
+        assert spec['asls_geometry']['geometry_representation']==comparison_mode
     k = len(specs['main']['layers'])
     for seed in cfg['random_baseline_seeds']:
         assert len(specs[f'randomk_raw_seed{seed}']['layers']) == k
         assert specs[f'randomk_raw_seed{seed}']['layers'] == specs[f'randomk_uvarfs_seed{seed}']['layers']
-    assert set(json.loads((output/'fit_manifest.json').read_text())['normal_train_paths']) == {str(s.image) for s in train}
+    manifest=json.loads((output/'fit_manifest.json').read_text())
+    assert manifest['asls_geometry_representation']==geometry_representation
+    assert set(manifest['normal_train_paths']) == {str(s.image) for s in train}
     # Duplicate representations must yield exactly the same memory rows,
     # including reservoir replacement when sampled rows exceed capacity.
     memories = build_memories(extractor,train,{**specs,'duplicate':specs['all_raw']},cfg,

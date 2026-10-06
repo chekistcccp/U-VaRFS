@@ -160,9 +160,10 @@ def test_paired_bootstrap_preserves_identical_method_and_mean_seed_auc():
     np.testing.assert_allclose(result['seed_mean'],[.5,.5])
 
 
-def test_cross_version_results_cannot_be_overwritten(tmp_path):
+@pytest.mark.parametrize('old_version',['gpu-eval-v4-protocol-fixes','gpu-eval-v5-normal-audit'])
+def test_cross_version_results_cannot_be_overwritten(tmp_path,old_version):
     (tmp_path/'liver').mkdir()
-    pd.DataFrame({'method':['main'],'experiment_version':['gpu-eval-v4-protocol-fixes']}).to_csv(tmp_path/'liver'/'metrics.csv',index=False)
+    pd.DataFrame({'method':['main'],'experiment_version':[old_version]}).to_csv(tmp_path/'liver'/'metrics.csv',index=False)
     with pytest.raises(ValueError,match='Historical results must remain intact'):
         validate_results_version(tmp_path)
 

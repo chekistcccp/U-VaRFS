@@ -1,5 +1,7 @@
 # v4 结果分析与 v5 修改说明（2026-10-06）
 
+本文保留批准前的 v5 实现记录。用户随后明确批准 patch 主方法；当前版本与验证步骤见 [v6 升级说明](PATCH_ASLS_UPGRADE.md)，以下 pooled Main/等待选择属于历史状态。
+
 本轮分析对象是 `results/gpu-eval-v4-protocol-fixes/`，六数据集 × 28 方法共 168 行。完整报告、五 seed mean ± SD、配对 bootstrap、来源指纹、压缩/耗时表与图见 [v4 分析](reports/2026-10-06-v4-analysis/analysis.md)。原始结果目录与用户回传的 `run.log` 保留原样。
 
 研究保持 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS 的无异常标签医学异常检测研究**。最终 benchmark 仍为 BMAD 全六数据集，Liver 是 CT 主分析/首轮调试数据集。

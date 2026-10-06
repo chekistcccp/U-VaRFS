@@ -128,7 +128,7 @@ def main():
                                'patch_size':extractor.patch_size,'prefix_tokens':extractor.num_prefix},
                    'torch_version':torch.__version__,'cuda_version':torch.version.cuda,
                    'objective_matmul_precision':'highest',
-                   'asls_geometry_representation':cfg['asls'].get('geometry_representation','pooled'),
+                   'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                    'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
                   out/'run_metadata.json')
 

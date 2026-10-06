@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v5-normal-audit
+results_dir: results/gpu-eval-v6-patch-asls
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
@@ -24,7 +24,7 @@ data:
   test_batch_size: 16
 
 asls:
-  geometry_representation: pooled
+  geometry_representation: patch
   geometry_tolerance: 0.05
   variability_weight: 0.15
   sparsity_weight: 0.02
@@ -61,8 +61,8 @@ methods:
   - random4_uvarfs
   - randomk_raw
   - randomk_uvarfs
-  - asls_patch_raw
-  - asls_patch_uvarfs
+  - asls_pooled_raw
+  - asls_pooled_uvarfs
 
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]
 

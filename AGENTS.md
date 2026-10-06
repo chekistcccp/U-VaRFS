@@ -228,13 +228,15 @@ representation geometry preservation
 
 当前 `uvarfs/asls.py` 使用：
 
-- 每层 cosine Gram；
+- 每层 normal patch cosine Gram（用户于 2026-10-06 批准作为主方法输入）；
 - 所有层平均得到 consensus geometry；
 - 每层 variability；
 - sigmoid continuous layer probability；
 - Adam 优化；
 - 最后按 gate probability 排序；
 - 选择满足 geometry tolerance 的最小层集合。
+
+默认复用已有 normal fit patches（256 图像 × 16 patches，实际数量记录在 manifest），通过 layer-Gram 内积等价计算误差。Mean-pooled geometry 保留为 `asls_pooled_raw` / `asls_pooled_uvarfs` 消融，不能根据 test AUROC 在两种输入之间择优选择主方法。
 
 **注意：当前代码不是严格的 Hard-Concrete L0 implementation。**
 
@@ -797,7 +799,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v5-normal-audit
+gpu-eval-v6-patch-asls
 ```
 
 原因：
@@ -915,7 +917,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v5-normal-audit
+experiment_version = gpu-eval-v6-patch-asls
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1171,7 +1173,7 @@ Codex 接手后优先级：
 
 # 27. 2026-10-06 原始协议实现修正交接
 
-本节保留 v4 当时的历史交接：版本为 `gpu-eval-v4-protocol-fixes`，默认结果目录为 `results/gpu-eval-v4-protocol-fixes/`。当前 v4 已在服务器验证全六数据集，最新状态见第 29 节；第 17 节属于更早运行历史。
+本节保留 v4 当时的历史交接：版本为 `gpu-eval-v4-protocol-fixes`，默认结果目录为 `results/gpu-eval-v4-protocol-fixes/`。当前 v4 已在服务器验证全六数据集，最新状态见第 30 节；第 17 节属于更早运行历史。
 
 本次按原主线修正：总体 normal variability 统计、每个 lambda 的预算后几何检查、FISTA 投影残差与迭代上限、mask 配对和 pixel metric 数学、同 K 随机层 baseline、统一 memory sampling 与严格 checkpoint 指纹。ASLS sigmoid/Adam 目标与 U-VaRFS 目标保持原样。ASLS 饱和只增加诊断，没有切换 Hard-Concrete 或改目标函数。
 
@@ -1203,18 +1205,37 @@ SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
 
 # 29. 2026-10-06 v4 回传与 v5 normal-only 诊断交接
 
+本节保留批准前的 v5 实现记录；用户随后批准 patch 主方法，当前状态见第 30 节。
+
 v4 全六数据集 × 28 方法完整；Brain/Liver/RESC 异常 mask 全覆盖，全部 image/pixel 指标、逐图预测和来源信息已复核。分析见 [v4 报告](reports/2026-10-06-v4-analysis/analysis.md)。旧版本产物不可改写/混合。
 
 Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw mean=79.47%；Main 仅在 Liver/OCT2017 高于同 K Random baseline。Liver AUPRO=95.10% 是正向证据，但 Brain 明显较差。主 U-VaRFS 六个最终表示均不可行（geometry error≈0.052–0.071）；投影残差较小，不能将迭代变化未收敛与几何不可行混为一谈。
 
-当前版本为 `gpu-eval-v5-normal-audit`，独立输出 `results/gpu-eval-v5-normal-audit/`。具体说明见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)：
+当时版本为 `gpu-eval-v5-normal-audit`，独立输出 `results/gpu-eval-v5-normal-audit/`。具体说明见 [RESULT_DRIVEN_FIXES.md](RESULT_DRIVEN_FIXES.md)：
 
 - ASLS/U-VaRFS 目标拟合使用 highest float32 matmul precision，退出恢复原精度；原 frozen backbone、detector、loss 与所有实验预算保持。
 - Batched FISTA 按 lambda 重启动量，记录原目标分项、box optimality gap 与独立数值诊断；beta、lambda path、几何容差、维度预算和原选择规则不变。
 - `lambda=0` 只用于不可行原因的 normal-only 诊断，明确 `selection_candidate=false`，不参与 main 选择。
-- **Main 默认 ASLS 仍是 pooled geometry**。增加 `asls_patch_raw`/`asls_patch_uvarfs` 两项消融，使用已有 fit patches、原 loss、sigmoid/Adam/离散规则和等价 Gram 内积，共 30 方法；原 28 方法与全部五 seeds 保留。
-- 主 ASLS geometry 输入切换按第 19 节等待用户明确选择。不得据 test AUROC 选择 pooled/patch 版本，不得静默替换为 Hard-Concrete 或改目标函数。
+- **v5 当时的 Main ASLS 是 pooled geometry**。增加 `asls_patch_raw`/`asls_patch_uvarfs` 两项消融，使用已有 fit patches、原 loss、sigmoid/Adam/离散规则和等价 Gram 内积，共 30 方法；原 28 方法与全部五 seeds 保留。
+- 主 ASLS geometry 输入切换当时按第 19 节等待用户明确选择；这一批准现已收到并落实于第 30 节。仍不得据 test AUROC 选择版本、静默替换为 Hard-Concrete 或改目标函数。
 - Mask 连通域共享与 pixel histogram/PRO 排序复用只影响最终评价开销。与 v4 的独立 CPU fixture 对照计数及指标完全一致，不代表已验证服务器总加速。
 - 不向含其他版本 CSV 的目录写入；指纹统一 POSIX 路径和 LF。
 
 本地工作机缺少真实数据、模型和 CUDA PyTorch，尚未取得 v5 真实性能。服务器先执行 `SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`，检查正常拟合与 pixel 指标，再运行全六。不得用本轮评价标签调 beta、lambda、层数或其他训练参数。
+
+---
+
+# 30. 2026-10-06 用户批准 patch 主方法（当前状态）
+
+用户明确指令：**“批准修改patch主方法”**。该批准已落实，无需再次询问同一切换的权限。
+
+当前版本：`gpu-eval-v6-patch-asls`；输出：`results/gpu-eval-v6-patch-asls/`。完整说明见 [PATCH_ASLS_UPGRADE.md](PATCH_ASLS_UPGRADE.md)。
+
+- 唯一 Main 为 Frozen DINOv3 全层候选 → **normal patch geometry ASLS** → 原 U-VaRFS → normal memory exact cosine 1-NN；最终仍是 BMAD 六数据集。
+- ASLS loss、sigmoid/Adam、layer budget/tolerance 和离散规则不变；更改的是主 geometry 输入，不是新的 detector 或监督任务。
+- `asls_pooled_raw` / `asls_pooled_uvarfs` 保留旧输入消融，替换 v5 两项 patch 消融，默认仍共 30 方法；原方法类别、五 seeds 与统一预算保持。
+- 默认与缺省路径均为 `geometry_representation=patch`；`asls.json` / `uvarfs_main.json` 必须体现 patch 主选层，记录实际 normal geometry rows。Random-K 随 Main 当前选层数调整。
+- v5 的原目标数值求解与诊断继续保留；beta、lambda path、normal fit/variability/memory 数据预算、feature budget、Top-1% 和 pixel metric 定义不变。
+- v4/v5 产物及回传文件不改写，旧版本不能 resume 到 v6。比较输入作用优先用 v6 同轮 Main 与 pooled 消融，不能将 v4→v6 的所有差异都归因于 patch。
+
+42 项本地数学/CPU fixture 回归检查通过；真实 BMAD 数据、模型和 CUDA PyTorch 仍不在本工作机，尚无 v6 真实性能。先在服务器验证 Liver：`SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`，看到 patch Main、pooled 消融、normal-only manifest 和 pixel 指标正常后再全六。

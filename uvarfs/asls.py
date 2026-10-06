@@ -50,7 +50,7 @@ def fit_asls(layer_features: dict[int, torch.Tensor], layer_variability: dict[in
     steps=int(cfg.get('steps',300))
     if not layers or steps<1 or not 1 <= int(cfg.get('min_layers',2)) <= min(int(cfg.get('max_layers',6)),len(layers)):
         raise ValueError('invalid ASLS layer budget or optimizer steps')
-    representation=cfg.get('geometry_representation','pooled')
+    representation=cfg.get('geometry_representation','patch')
     if representation not in {'pooled','patch'}:
         raise ValueError('ASLS geometry_representation must be pooled or patch')
     geometry=LayerGramGeometry(layer_features,layers) if representation=='patch' else None

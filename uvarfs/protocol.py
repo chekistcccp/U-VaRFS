@@ -5,7 +5,7 @@ import json
 import math
 from pathlib import Path
 
-EXPERIMENT_VERSION = 'gpu-eval-v5-normal-audit'
+EXPERIMENT_VERSION = 'gpu-eval-v6-patch-asls'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 

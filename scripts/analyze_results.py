@@ -227,6 +227,7 @@ def write_report(output,df,summary,paired,prevalence,data):
         pairs[c]=pairs[c].map(lambda x:f'{x*100:+.2f}')
     lines=[
         '# BMAD v4 回传分析（2026-10-06）','',
+        '归档说明：本报告评价数据来自 v4，修改建议记录批准前的 v5 状态。用户随后批准 patch 主方法；当前 v6 说明见 [升级记录](../../PATCH_ASLS_UPGRADE.md)，本报告不包含 v6 性能。','',
         f'这轮完成六数据集全部 {data["rows"]} 行（28 方法/数据集）和 Brain/Liver/RESC 像素评价。主方法 Macro Image AUROC={macro["main"]*100:.2f}%，Fixed-4 Raw={macro["fixed4_raw"]*100:.2f}%，同 K Random Raw 五 seed 均值={macro["randomk_raw"]*100:.2f}%。层选择仍是主要诊断对象，不能宣称主方法整体胜过固定/随机层。','',
         '主线始终是 Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS 的无异常标签医学异常检测研究；本报告没有用测试标签选择层、lambda、维度或 detector 参数。','',
         '## 完整性与来源','',
