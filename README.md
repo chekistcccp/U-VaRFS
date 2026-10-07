@@ -1,6 +1,8 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
 > **当前实现版本：`gpu-eval-v11-forward-budget-audit`**。保持 patch ASLS 与原 U-VaRFS 目标，新增从零构建的原目标前向支持集/refit 候选，逐 lambda 保护旧交换解，并保存全局预算几何下界。原始输入 Main 与完整 L2 消融保留，新增同层旧交换对照，共 76 方法。两分支共享 normal 数据、扰动、DINO forward 与 memory 抽样；损失、beta/lambda、预算和 detector 保持。L2 主输入切换仍按 AGENTS 第 19 节待明确批准。开发与复跑说明见 [FORWARD_BUDGET_AUDIT.md](FORWARD_BUDGET_AUDIT.md)。新版性能仍需服务器验证。
 
+U-VaRFS 的目标升级方案见 [cosine 几何目标提案](UV_COSINE_OBJECTIVE_PROPOSAL.md)：保留实际 cosine geometry、固定相对权重尺度并使用维数惩罚。本次提供只读正常诊断与数学评审脚本；新目标尚未接入训练，按 AGENTS 第 5.2/19 节待明确批准。当前 Main、配置和实验指纹保持。
+
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
 > **数据入口已固定为 `data/archives/`**  

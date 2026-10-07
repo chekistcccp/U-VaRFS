@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **最新开发状态见第 35 节（v11 原目标前向支持集与预算诊断）**。原始输入 Main 与完整层 L2 消融保留，L2 Main 切换须按第 19 节明确批准。较早版本交接保留历史语境。
+> **当前实验状态见第 35 节（v11 原目标前向支持集与预算诊断）**；第 36 节提供待批准的 U-VaRFS 目标升级提案，尚未接入训练。原始输入 Main 与完整层 L2 消融保留，L2 Main 切换须按第 19 节明确批准。较早版本交接保留历史语境。
 
 ---
 
@@ -1324,3 +1324,17 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 分析脚本增加按输入分支自身 baseline 的配对 bootstrap，显式 target_method；原指标、五 seeds、manifest/预算、lambda 规则、旧候选保护、诊断派生量和来源哈希继续核验。新版本与旧结果隔离，不覆盖/混合历史产物。
 
 92 项本地数学/CPU/I/O 检查通过，3 项 CUDA 检查跳过；shell/diff 检查通过。覆盖原目标插入 oracle、全支持小型枚举、预算紧下界、旧策略精确对照，以及两种 primary 配置的 76 方法 fit/memory/pixel 流程。真实 BMAD、模型和 CUDA 不在本机，尚无 v11 性能；服务器先 Liver 再全六，不能将本地通过解释为检测改善。
+
+---
+
+# 36. 2026-10-07 U-VaRFS 目标升级评审（待批准，当前训练仍为 v11）
+
+用户要求改进 U-VaRFS 以取得正向效果。可审核的具体方案见 [UV_COSINE_OBJECTIVE_PROPOSAL.md](UV_COSINE_OBJECTIVE_PROPOSAL.md)：actual cosine geometry + simplex 相对权重 + normal-reference 标定的 variability + cardinality 稀疏惩罚。
+
+- 原 weighted-Gram 目标与 detector 行归一化 cosine 度量不同。直接换成 cosine 后沿用原惩罚会出现权重整体趋零退化；simplex 上 L1 又是常数，不能声称产生稀疏。
+- 本次新增 `scripts/review_uvarfs_objective.py` 和独立数学/来源检查，只汇总已有正常训练诊断与计算给定候选权重的评审 loss，没有 optimizer、feature selector 或主训练接入。结果与报告依第 28 节仅留本地；开发文档不含本轮回传指标。
+- 当前 Main、完整 L2 消融、原目标、ASLS、数据/维度/memory 预算、beta/lambda、detector、experiment version 与实验代码指纹均不变。既有 v11 和 L2 主输入待批准状态保持；不能把该评审声明为已改进真实检测性能。
+- 新目标会改变第 5.2 节的精确数学定义，按第 19 节待用户明确批准，再实现统一 solver、同轮原目标控制、新变体同维 PCA/Random、独立版本目录和必要数值/流程检查。提案不捆绑 L2 主输入切换，不使用 test labels 调参。
+- 新增检查覆盖独立 scalar sample-space oracle、缩放退化和尺度约束、cardinality 区别于 L1、零行/零 variability、来源支持/scales、报告覆盖保护及实验指纹隔离。数学可行不保证 BMAD 的 AUROC/AUPRO 改善；最终仍须固定设计运行全六。
+
+102 项本地检查通过（其中新增 10 项），3 项 CUDA 检查因本机无 runtime 跳过；diff 检查通过。原训练源码/配置/runner 与修改前一致，评审未改变实验指纹。实际拟合方法升级和真实性能验证仍待上述目标变更批准。
