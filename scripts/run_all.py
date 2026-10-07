@@ -139,7 +139,7 @@ def main():
                    'objective_matmul_precision':'highest',
                    'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                    'asls_discrete_selection':cfg['asls'].get('discrete_selection','geometry_search'),
-                   'uvarfs_sparsity_strategy':cfg['uvarfs'].get('sparsity_strategy','objective_exchange_refit'),
+                   'uvarfs_sparsity_strategy':cfg['uvarfs'].get('sparsity_strategy','objective_forward_refit'),
                    'layer_normalization':cfg.get('representation',{}).get('layer_normalization','none'),
                    'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
                   out/'run_metadata.json')
@@ -219,6 +219,13 @@ def main():
                          uvarfs_exchange_steps=spec['obj'].get('exchange_steps'),
                          uvarfs_exchange_objective_improvement=spec['obj'].get('exchange_objective_improvement'),
                          uvarfs_exchange_geometry_improvement=spec['obj'].get('exchange_geometry_improvement'))
+                budget=spec['obj']['budget_geometry_audit']
+                r.update(uvarfs_global_geometry_lower_bound=budget['geometry_error_lower_bound'],
+                         uvarfs_necessary_features_lower_bound=budget['necessary_features_lower_bound'],
+                         uvarfs_budget_ruled_out=budget['budget_ruled_out_at_working_precision'],
+                         uvarfs_forward_source=spec['obj'].get('forward_source'),
+                         uvarfs_forward_candidate_accepted=spec['obj'].get('forward_candidate_accepted'),
+                         uvarfs_forward_objective_improvement=spec['obj'].get('forward_objective_improvement'))
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)

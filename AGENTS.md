@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **最新开发状态见第 34 节（v10 完整输入归一化消融）**。原始输入 Main 暂保留；完整层 L2 输入消融已实现，Main 切换须按第 19 节收到明确批准。较早版本交接保留历史语境。
+> **最新开发状态见第 35 节（v11 原目标前向支持集与预算诊断）**。原始输入 Main 与完整层 L2 消融保留，L2 Main 切换须按第 19 节明确批准。较早版本交接保留历史语境。
 
 ---
 
@@ -1299,7 +1299,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 34. 2026-10-07 v10 完整层输入归一化消融（当前状态）
+# 34. 2026-10-07 v10 完整层输入归一化消融（历史开发记录）
 
 版本 `gpu-eval-v10-layer-alignment`；当前输出 `results/gpu-eval-v10-layer-normalization-ablation/`。实现、授权边界、完整第 19 节检查与复跑说明见 [LAYER_ALIGNMENT_ABLATION.md](LAYER_ALIGNMENT_ABLATION.md)。回传实验与分析继续按第 28 节仅保留本地。
 
@@ -1310,3 +1310,17 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - Main 输入协议切换会影响研究实现与跨版本可比性，按第 19 节等待用户明确批准；批准后应固定 L2 Main 与全部 baseline，同时保留 `raw_input_*` 完整控制并使用 `results/gpu-eval-v10-layer-alignment/` 独立目录。已有 patch 和支持集求解授权不等于该新输入协议授权，不重复询问已有授权。
 
 81 项本地 CPU/math/I/O 检查通过，2 项 CUDA 对照因本机无 runtime 跳过；两种 primary 输入配置均有 74 方法 fit/memory/pixel fixture 验证。本机没有真实数据/模型/CUDA，未取得 v10 检测性能。先服务器 Liver，再 BMAD 全六；旧回传与历史产物不得覆盖。
+
+---
+
+# 35. 2026-10-07 v11 原目标前向支持集与全局预算诊断（当前状态）
+
+版本 `gpu-eval-v11-forward-budget-audit`；独立输出 `results/gpu-eval-v11-forward-budget-audit/`。详细原目标推导、第 19 节检查、字段作用域和复跑说明见 [FORWARD_BUDGET_AUDIT.md](FORWARD_BUDGET_AUDIT.md)。实验回传与分析继续按第 28 节仅留本地，不在开发文档中同步实验结果。
+
+- 延续用户“换一种性能更好的稀疏方式”的既有授权，新增 `objective_forward_refit`：原 FISTA → prune/refit → exchange/refit → 独立零起点前向候选/refit。每次插入精确最小化原目标的单坐标增量；原 H、P/rscale、beta/lambda、box、层/特征预算与无标签选解规则保持。每 lambda 保留旧交换候选，只接受原目标与 weighted-Gram 误差均不变差的表示；不保证检测收益或全局支持最优。
+- 新增 `budget_geometry_audit`：由 `b=H1` 的最大 K 维参考对齐量，给出覆盖全部预算内支持集/box 权重的 geometry error 下界及必要维数下界。只读且不参与选择，工作精度报告 margin 不改变训练容差；下界未排除不代表可行。它区别于 fixed_support floor，不能据诊断自动增维、调 beta/lambda 或改损失。
+- Main 输入保持 raw，完整 L2 分支保留；新增 `asls_exchange_refit_uvarfs` 同层旧算法对照，默认 76 方法、全六 456 行。原 baseline 与五 seeds 保留。两分支的 variability、fit、memory、query 空间各自一致，共享同一正常图像/patch/扰动/DINO forward 和 memory 清单。L2 Main 切换仍待第 19 节批准，不能按 test AUROC 选择输入或删掉 ASLS。
+- 保存前向候选构建/接受状态、原目标改善、全局/固定支持/continuous 证书、每维和源层的正常参考对齐量。`forward_candidate_insertions` 指候选构建次数，应结合 accepted/source 判断实际采用。所有候选/refit/诊断时间计入共享 fit，旧嵌套中间时间不能作为独立方法效率。
+- 分析脚本增加按输入分支自身 baseline 的配对 bootstrap，显式 target_method；原指标、五 seeds、manifest/预算、lambda 规则、旧候选保护、诊断派生量和来源哈希继续核验。新版本与旧结果隔离，不覆盖/混合历史产物。
+
+92 项本地数学/CPU/I/O 检查通过，3 项 CUDA 检查跳过；shell/diff 检查通过。覆盖原目标插入 oracle、全支持小型枚举、预算紧下界、旧策略精确对照，以及两种 primary 配置的 76 方法 fit/memory/pixel 流程。真实 BMAD、模型和 CUDA 不在本机，尚无 v11 性能；服务器先 Liver 再全六，不能将本地通过解释为检测改善。

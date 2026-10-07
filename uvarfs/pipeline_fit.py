@@ -167,7 +167,12 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None)
         return value
 
     def save_uv(name,layers,result):
-        save_json({'layers':layers,**serializable(result)},dataset_out/f'uvarfs_{name}.json')
+        audit=result.get('budget_geometry_audit')
+        mass=audit['coordinate_reference_alignment'] if audit is not None else []
+        by_layer={str(l):sum(mass[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim]) for i,l in enumerate(layers)}
+        save_json({'layers':layers,'layer_normalization':input_mode,
+                   'normal_reference_alignment_by_layer':by_layer,
+                   **serializable(result)},dataset_out/f'uvarfs_{name}.json')
 
     def fit_uv(name, layers):
         key=tuple(layers)
@@ -224,6 +229,11 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None)
         obj=main_uv.get('prune_refit',main_uv)
         save_uv('asls_prune_refit',selected,obj)
         specs['asls_prune_refit_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
+            'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
+    if 'asls_exchange_refit_uvarfs' in enabled:
+        obj=main_uv.get('exchange_refit',main_uv)
+        save_uv('asls_exchange_refit',selected,obj)
+        specs['asls_exchange_refit_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
             'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
     if 'legacy_main' in enabled:
         prefix=reselect_asls(asls,cfg['asls'],'gate_prefix')

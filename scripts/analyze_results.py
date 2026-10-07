@@ -66,12 +66,12 @@ class WeightedRanking:
         return auc,ap
 
 
-def paired_bootstrap(frame, comparisons, draws=2000, seed=42, batch_size=32):
+def paired_bootstrap(frame, comparisons, draws=2000, seed=42, batch_size=32, target='main'):
     y=frame['label'].to_numpy(dtype=np.int64)
     normal=np.flatnonzero(y==0); abnormal=np.flatnonzero(y==1)
     if not len(normal) or not len(abnormal):
         raise ValueError('paired AUROC bootstrap needs both classes')
-    names=['main']+sorted({name for group in comparisons.values() for name in group})
+    names=sorted({target}|{name for group in comparisons.values() for name in group})
     rankings={name:WeightedRanking(y,frame[name]) for name in names}
     rng=np.random.default_rng(seed)
     differences={family:[] for family in comparisons}
@@ -83,7 +83,7 @@ def paired_bootstrap(frame, comparisons, draws=2000, seed=42, batch_size=32):
         aucs={name:ranking.metrics(weights)[0] for name,ranking in rankings.items()}
         for family,methods in comparisons.items():
             baseline=np.mean([aucs[name] for name in methods],axis=0)
-            differences[family].extend((aucs['main']-baseline).tolist())
+            differences[family].extend((aucs[target]-baseline).tolist())
     return {family:np.percentile(values,[2.5,97.5]).tolist() for family,values in differences.items()}
 
 
@@ -112,7 +112,7 @@ def audit_sparse_path(result, cfg):
     selected=min(feasible,key=lambda p:(p['retained_features'],p['geometry_error'])) if feasible else min(path,key=lambda p:p['geometry_error'])
     if selected['lambda']!=result['lambda']:
         raise ValueError('U-VaRFS selected lambda violates its normal-only selection rule')
-    for key in ['legacy_top_weights','prune_refit']:
+    for key in ['legacy_top_weights','prune_refit','exchange_refit']:
         if key not in result:
             continue
         old=result[key]['lambda_path']
@@ -121,6 +121,27 @@ def audit_sparse_path(result, cfg):
         for actual,reference in zip(path,old):
             if actual['lambda']!=reference['lambda'] or actual['budgeted_objective']>reference['budgeted_objective']+1e-7 or actual['geometry_error']>reference['geometry_error']+1e-7:
                 raise ValueError('U-VaRFS refinement violates its per-lambda objective/geometry guard')
+    audit=result.get('budget_geometry_audit')
+    if audit is not None:
+        mass=np.asarray(audit['coordinate_reference_alignment'],dtype=np.float64)
+        if (audit['selection_candidate'] is not False or
+            audit['scope']!='all_supports_with_at_most_max_features_and_box_weights' or
+            len(mass)!=dimension or not np.isfinite(mass).all() or (mass<0).any() or
+            audit['max_features']!=maximum or audit['geometry_tolerance']!=cfg['geometry_tolerance'] or
+            audit['numerical_reporting_margin']!=1e-6):
+            raise ValueError('global budget geometry audit has an incorrect scope')
+        zero=audit['zero_reference_gram']
+        if not np.isclose(mass.sum(),0 if zero else 1,atol=1e-10):
+            raise ValueError('global budget geometry mass is not normalized')
+        cumulative=np.cumsum(np.sort(mass)[::-1])
+        floor=0 if zero else max(0,1-cumulative[maximum-1])
+        necessary=0 if zero else min(dimension,int(np.searchsorted(cumulative,1-cfg['geometry_tolerance']))+1)
+        ruled_out=floor>cfg['geometry_tolerance']+audit['numerical_reporting_margin']
+        if (not np.isclose(floor,audit['geometry_error_lower_bound'],atol=1e-10) or
+            necessary!=audit['necessary_features_lower_bound'] or
+            ruled_out!=audit['budget_ruled_out_at_working_precision'] or
+            any(p['geometry_error']+1e-6<floor for p in path)):
+            raise ValueError('global budget geometry lower bound or feasibility is inconsistent')
     sources={}
     for point in path:
         key=point.get('budget_source','top_weights'); sources[key]=sources.get(key,0)+1
@@ -164,6 +185,7 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
             raise ValueError('normal geometry diagnostics use the wrong input convention or rows')
         records.append({'method':own,'layer_normalization':mode,'layers':a['selected_layers'],
                         'sparse_path_audit':audit_sparse_path(u,cfg['uvarfs']),
+                        'budget_geometry_audit':u.get('budget_geometry_audit'),
                         'normal_cosine_geometry':normal})
     return records
 
@@ -238,8 +260,8 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_raw':[f'randomk_raw_seed{s}' for s in seeds],
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
-        for method in ['asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
-                       'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','legacy_main',
+        for method in ['all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
+                       'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','legacy_main',
                        'layer_l2_main','raw_input_main']:
             if method in source.method.values:
                 comparisons[method]=[method]
@@ -247,10 +269,38 @@ def audit(results: Path, output: Path, draws: int):
         main=source.set_index('method').loc['main']
         for family,methods in comparisons.items():
             delta=float(main.image_auroc-source.set_index('method').loc[methods].image_auroc.mean())
-            paired_rows.append({'dataset':dataset,'comparison':family,'delta_auroc':delta,
+            paired_rows.append({'dataset':dataset,'target_method':'main','comparison':family,'delta_auroc':delta,
                                 'ci95_lower':intervals[family][0],'ci95_upper':intervals[family][1],
                                 'bootstrap_draws':draws,'bootstrap_seed':42,'bootstrap_unit':'image',
                                 'stratified_by_label':True})
+        # Compare each other input branch against its OWN baselines.
+        _,modes=normalization_modes(cfg)
+        for mode in modes[1:]:
+            prefix=normalization_prefix(mode); target=prefix+'main'
+            groups={prefix+family:[prefix+family] for family in [
+                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','legacy_main',
+                'asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs'] if prefix+family in source.method.values}
+            groups.update({prefix+family:[f'{prefix}{family}_seed{s}' for s in seeds]
+                           for family in ['randomk_raw','randomk_uvarfs','asls_random']})
+            intervals=paired_bootstrap(predictions,groups,draws=draws,target=target)
+            for family,methods in groups.items():
+                delta=float(source.set_index('method').loc[target].image_auroc-source.set_index('method').loc[methods].image_auroc.mean())
+                paired_rows.append({'dataset':dataset,'target_method':target,'comparison':family,'delta_auroc':delta,
+                                    'ci95_lower':intervals[family][0],'ci95_upper':intervals[family][1],
+                                    'bootstrap_draws':draws,'bootstrap_seed':42,'bootstrap_unit':'image',
+                                    'stratified_by_label':True})
+        for mode in modes:
+            prefix='' if mode==modes[0] else normalization_prefix(mode)
+            target=prefix+'asls_raw'
+            groups={prefix+family:[prefix+family] for family in ['fixed4_raw','all_raw']}
+            groups[prefix+'randomk_raw']=[f'{prefix}randomk_raw_seed{s}' for s in seeds]
+            intervals=paired_bootstrap(predictions,groups,draws=draws,target=target)
+            for family,methods in groups.items():
+                delta=float(source.set_index('method').loc[target].image_auroc-source.set_index('method').loc[methods].image_auroc.mean())
+                paired_rows.append({'dataset':dataset,'target_method':target,'comparison':family,'delta_auroc':delta,
+                                    'ci95_lower':intervals[family][0],'ci95_upper':intervals[family][1],
+                                    'bootstrap_draws':draws,'bootstrap_seed':42,'bootstrap_unit':'image',
+                                    'stratified_by_label':True})
         prevalence_rows.append({'dataset':dataset,'normal':int((y==0).sum()),'abnormal':int((y==1).sum()),
                                 'image_positive_prevalence':float(y.mean()),'main_image_auprc':float(main.image_auprc)})
         a=json.loads((folder/'asls.json').read_text())
@@ -345,7 +395,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda x:f'{100*x:.2f}' if pd.notna(x) else 'n.a.')
     comparison=pd.DataFrame({'dataset':DATASETS})
-    families=['main','layer_l2_main','raw_input_main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
+    families=['main','layer_l2_main','raw_input_main','legacy_main','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
               'asls_pooled_uvarfs','asls_raw','fixed4_raw','all_raw','randomk_raw','asls_random','asls_pca']
     wins={}
     for family in families:
@@ -376,7 +426,8 @@ def write_current_report(output,df,summary,paired,prevalence,data):
             'continuous_active_features':point.continuous_active_features,
             'continuous_geometry_error':point.continuous_geometry_error,
             'retained_features':point.retained_features,'budgeted_geometry_error':point.geometry_error})
-    pairs=paired[['dataset','comparison','delta_auroc','ci95_lower','ci95_upper']].copy()
+    pairs=paired.assign(target_method=paired.get('target_method','main'))[
+        ['dataset','target_method','comparison','delta_auroc','ci95_lower','ci95_upper']].copy()
     for column in ['delta_auroc','ci95_lower','ci95_upper']:
         pairs[column]=pairs[column].map(lambda x:f'{100*x:+.2f}')
     efficiency=main[['selected_layer_count','feature_dim','candidate_dim','compression_ratio','memory_size',
@@ -401,7 +452,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         '## 同轮公平比较','', 'Random 项均纳入全部五 seeds，报告 mean ± sample SD；每个输入分支的 Random-K 与该分支 Main 的 K 相同。','',
         markdown_table(comparison,comparison.columns.tolist()),'',
         f'在相同 ASLS 层输入下，U-VaRFS 在 {wins["asls_raw"]}/6 数据集高于 Raw，在 {wins["asls_random"]}/6 高于同维度 Random feature 均值，在 {wins["asls_pca"]}/6 高于 PCA。不能据此宣称全部数据集优于固定层或 PCA。','',
-        f'配对差值为 Main 减 baseline，单位百分点。{data["bootstrap_draws"]} 次按正常/异常分层的 image bootstrap；每次 draw 内取各 seed AUC 均值，不将 seed 预测均值当作 ensemble。','',
+        f'配对差值为各行 target_method 减 comparison，单位百分点。{data["bootstrap_draws"]} 次按正常/异常分层的 image bootstrap；每次 draw 内取各 seed AUC 均值，不将 seed 预测均值当作 ensemble。各输入分支与自己的 baseline 比较，不能把跨输入改善全部归因于 U-VaRFS。','',
         markdown_table(pairs,pairs.columns.tolist()),'',
         '未提供患者/slide 分组，区间仅以图像为抽样单位；没有多重比较校正或预设非劣界值，不宣称患者级显著性或非劣。','',
         '## 正常训练几何与数值诊断','',markdown_table(diagnostic.round(8),diagnostic.columns.tolist()),'',
@@ -461,6 +512,19 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         comparison.to_csv(output/'representation_comparison.csv',index=False)
         lines.extend(['## 表示输入的同轮对照','',markdown_table(comparison.round(7),comparison.columns.tolist()),'',
             '输入分支复用相同正常图像/patches、扰动及 DINO forward，各自计算对应表示的 variability，全部方法采用同一分支内的一致输入和 memory 预算。归一化是预先固定的输入协议，不能按 test AUROC 从两个分支挑选主方法。',''])
+    budget_rows=[]
+    for diagnostic in data['diagnostics']:
+        for record in diagnostic.get('representation_audit',[]):
+            audit=record.get('budget_geometry_audit')
+            if audit is not None:
+                budget_rows.append({'dataset':diagnostic['dataset'],'method':record['method'],
+                    'global_geometry_error_lower_bound':audit['geometry_error_lower_bound'],
+                    'necessary_features_lower_bound':audit['necessary_features_lower_bound'],
+                    'budget_ruled_out':audit['budget_ruled_out_at_working_precision']})
+    if budget_rows:
+        frame=pd.DataFrame(budget_rows); frame.to_csv(output/'global_budget_geometry.csv',index=False)
+        lines.extend(['## 全局特征预算必要条件','',markdown_table(frame.round(8),frame.columns.tolist()),'',
+            '该下界来自正常 H 的参考 Gram 对齐量，覆盖全部预算内支持集及 box 权重，区别于固定支持集下界。下界未超过容差不证明可行，必要维数不构造可行解；数值计算有报告 margin，不能当作区间算术证明。它不参与选解、不自动调整维数/容差/beta/lambda。',''])
     (output/'analysis.md').write_text('\n'.join(lines),encoding='utf-8')
 
 

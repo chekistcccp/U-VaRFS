@@ -3,7 +3,8 @@ import math, time
 import torch
 import torch.nn.functional as F
 from .numerics import precise_matmul
-from .sparse_support import refine_budget, exchange_budget
+from .sparse_support import refine_budget, exchange_budget, forward_budget
+from .budget_geometry import audit_budget_geometry
 
 
 def _r_scale(H: torch.Tensor, P: torch.Tensor) -> float:
@@ -133,8 +134,8 @@ def _batched_fista(H, P, beta, rscale, lambdas, max_iter, tol, check_every=25, l
 def _select_solution(W, H, lambdas, cfg, solver, objective_args=None, retained_override=None):
     """Apply the feature budget to EVERY path point before checking geometry.
 
-    Feasibility refers to the representation actually used by cosine matching,
-    not the untruncated continuous weights. No anomaly labels enter selection.
+    Feasibility refers to budgeted weights in the original weighted Gram,
+    before detector row normalization. No anomaly labels enter selection.
     """
     m=W.shape[0]
     minf=min(int(cfg.get('min_features',32)),m)
@@ -234,7 +235,7 @@ def _selection_result(W,selection,lambdas,L,iterations,seconds,strategy):
         **{k:v for k,v in point.items() if k.startswith('budgeted_') or k in
            {'budget_source','legacy_budgeted_objective','legacy_geometry_error','objective_improvement',
             'geometry_improvement','fixed_support_box_gap','fixed_support_converged','support_refit_iterations'}},
-        **{k:v for k,v in point.items() if k.startswith('exchange_') or k.startswith('prune_refit_')},
+        **{k:v for k,v in point.items() if k.startswith(('exchange_','prune_refit_','forward_'))},
     }
 
 
@@ -249,6 +250,24 @@ def _merge_exchange_diagnostics(points, previous, exchanges, retained, H, P, bet
             point['fixed_support_converged']=gaps[j]<=tol
             point['objective_improvement']+=diagnostic['exchange_objective_improvement']
             point['geometry_improvement']+=diagnostic['exchange_geometry_improvement']
+
+
+def _merge_forward_diagnostics(points, previous, diagnostics):
+    for point,old,diagnostic in zip(points,previous,diagnostics):
+        # Preserve old search diagnostics without replacing the new objective,
+        # geometry or feasibility computed from the actual retained weights.
+        for key,value in old.items():
+            if key.startswith(('legacy_','exchange_','prune_refit_')) or key in {
+                'budget_source','objective_improvement','geometry_improvement',
+                'fixed_support_box_gap','fixed_support_converged','support_refit_iterations'}:
+                point[key]=value
+        point.update(diagnostic)
+        if diagnostic['forward_candidate_accepted']:
+            point['budget_source']=diagnostic['forward_source']
+            point['fixed_support_box_gap']=diagnostic['forward_fixed_support_box_gap']
+            point['fixed_support_converged']=diagnostic['forward_fixed_support_converged']
+            point['objective_improvement']+=diagnostic['forward_objective_improvement']
+            point['geometry_improvement']+=diagnostic['forward_geometry_improvement']
 
 
 @precise_matmul()
@@ -283,11 +302,11 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     tol=float(cfg.get('tol',1e-5))
     check_every=int(cfg.get('check_every',25))
     log_every=int(cfg.get('log_every',50))
-    strategy=cfg.get('sparsity_strategy','objective_exchange_refit')
+    strategy=cfg.get('sparsity_strategy','objective_forward_refit')
 
     if (not lambdas or any(not math.isfinite(lam) or lam<0 for lam in lambdas)
         or not math.isfinite(beta) or beta<0 or not math.isfinite(tol) or tol<=0
-        or max_iter<1 or check_every<1 or log_every<1 or strategy not in {'top_weights','objective_prune_refit','objective_exchange_refit'}):
+        or max_iter<1 or check_every<1 or log_every<1 or strategy not in {'top_weights','objective_prune_refit','objective_exchange_refit','objective_forward_refit'}):
         raise ValueError('invalid U-VaRFS path or solver configuration')
     W,L,used_iter,solver=_batched_fista(
         H,P,beta,rscale,lambdas,max_iter,tol,
@@ -298,21 +317,36 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     legacy=_selection_result(W,legacy_selection,lambdas,L,used_iter,time.time()-t0,'top_weights')
     selection=legacy_selection
     prune_refit=None
+    exchange_refit=None
     if strategy!='top_weights':
         retained,support_diagnostics=refine_budget(W,H,P,beta,rscale,lambdas,cfg,label)
         selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale),retained)
         for point,diagnostic in zip(selection[3],support_diagnostics):
             point.update(diagnostic)
         prune_refit=_selection_result(W,selection,lambdas,L,used_iter,time.time()-t0,'objective_prune_refit')
-        if strategy=='objective_exchange_refit':
+        if strategy in {'objective_exchange_refit','objective_forward_refit'}:
             retained,exchanges=exchange_budget(retained,W,H,P,beta,rscale,lambdas,cfg,label)
             selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale),retained)
             _merge_exchange_diagnostics(selection[3],support_diagnostics,exchanges,retained,H,P,beta,rscale,lambdas,tol)
+            exchange_refit=_selection_result(W,selection,lambdas,L,used_iter,time.time()-t0,'objective_exchange_refit')
+        if strategy=='objective_forward_refit':
+            previous=selection[3]
+            retained,forward=forward_budget(retained,W,H,P,beta,rscale,lambdas,cfg,label)
+            selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale),retained)
+            _merge_forward_diagnostics(selection[3],previous,forward)
     result=_selection_result(W,selection,lambdas,L,used_iter,time.time()-t0,strategy)
     if strategy!='top_weights':
         result['legacy_top_weights']=legacy
-    if strategy=='objective_exchange_refit':
+    if strategy in {'objective_exchange_refit','objective_forward_refit'}:
         result['prune_refit']=prune_refit
+    if strategy=='objective_forward_refit':
+        result['exchange_refit']=exchange_refit
+    budget_audit=audit_budget_geometry(H,cfg)
+    for candidate in [result,legacy,prune_refit,exchange_refit]:
+        if candidate is not None:
+            candidate['budget_geometry_audit']=budget_audit
+    print(f'[{label}] normal budget audit: global_geometry_floor>={budget_audit["geometry_error_lower_bound"]:.4f} '
+          f'necessary_features>={budget_audit["necessary_features_lower_bound"]} (diagnostic only)',flush=True)
     print(
         f'[{label}] done: strategy={strategy} lambda={result["lambda"]:g} active={len(result["active"])}/{m} '
         f'geometry_error={result["geometry_error"]:.4f} iterations={used_iter} elapsed={result["fit_seconds"]:.1f}s',
@@ -335,7 +369,7 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
             diagnostic_path[0].update(diagnostics[0])
             if prune_refit is not None:
                 prune_refit['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
-            if strategy=='objective_exchange_refit':
+            if strategy in {'objective_exchange_refit','objective_forward_refit'}:
                 retained,diagnostics=exchange_budget(retained,diagnostic_W,H,P,beta,rscale,[0.0],cfg,f'{label}:lambda0')
                 _,_,_,updated=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale),retained)
                 previous={k:v for k,v in diagnostic_path[0].items() if k in
@@ -343,6 +377,13 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
                      'fixed_support_box_gap','fixed_support_converged','support_refit_iterations','support_optimality_scope'}}
                 _merge_exchange_diagnostics(updated,[previous],diagnostics,retained,H,P,beta,rscale,[0.0],tol)
                 diagnostic_path=updated
+                if exchange_refit is not None:
+                    exchange_refit['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
+            if strategy=='objective_forward_refit':
+                previous=diagnostic_path
+                retained,diagnostics=forward_budget(retained,diagnostic_W,H,P,beta,rscale,[0.0],cfg,f'{label}:lambda0')
+                _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale),retained)
+                _merge_forward_diagnostics(diagnostic_path,previous,diagnostics)
         result['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
     return result
 

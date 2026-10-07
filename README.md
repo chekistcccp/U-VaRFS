@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v10-layer-alignment`**。保持已授权的 patch ASLS 组合搜索与原 U-VaRFS 支持集交换/refit；原始输入 Main 保留，新增完整层 L2 归一化消融，共 74 方法。两分支共享正常图像/patches、扰动、DINO forward 与 memory 抽样，各自一致地计算 variability 和 matching 输入。损失、beta/lambda、所有预算及 detector 保持；Main 输入切换按 AGENTS 第 19 节等待明确批准。实现与复跑说明见 [LAYER_ALIGNMENT_ABLATION.md](LAYER_ALIGNMENT_ABLATION.md)。新版真实性能仍需服务器验证。
+> **当前实现版本：`gpu-eval-v11-forward-budget-audit`**。保持 patch ASLS 与原 U-VaRFS 目标，新增从零构建的原目标前向支持集/refit 候选，逐 lambda 保护旧交换解，并保存全局预算几何下界。原始输入 Main 与完整 L2 消融保留，新增同层旧交换对照，共 76 方法。两分支共享 normal 数据、扰动、DINO forward 与 memory 抽样；损失、beta/lambda、预算和 detector 保持。L2 主输入切换仍按 AGENTS 第 19 节待明确批准。开发与复跑说明见 [FORWARD_BUDGET_AUDIT.md](FORWARD_BUDGET_AUDIT.md)。新版性能仍需服务器验证。
 
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  

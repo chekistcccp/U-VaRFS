@@ -267,3 +267,69 @@ def exchange_budget(seed, original_weights, H, P, beta, rscale, lambdas, cfg, la
             'exchange_fixed_support_box_gap':info['fixed_support_box_gap'][j] if index==2 else None,
             'exchange_fixed_support_converged':info['fixed_support_converged'][j] if index==2 else None})
     return chosen,diagnostics
+
+
+def objective_forward(H, P, beta, rscale, lambdas, cfg, label):
+    """Build an independent support from zero using exact insertion losses.
+
+    For omitted j, minimize gradient_j*t + .5*A_jj*t^2 on 0<=t<=1.
+    Existing coefficients are fixed during insertion; the subsequent refit
+    optimizes their ORIGINAL full objective. No geometry surrogate is fitted.
+    """
+    paths=len(lambdas); maximum=min(int(cfg.get('max_features',256)),H.shape[0])
+    current=torch.zeros((H.shape[0],paths),device=H.device,dtype=H.dtype)
+    columns=torch.arange(paths,device=H.device)
+    target=H.sum(1,keepdim=True)
+    lams=torch.as_tensor(lambdas,device=H.device,dtype=H.dtype)[None,:]
+    diagonal=H.diagonal()+2*beta*rscale*P.square().sum(1)
+    gradient=-target+lams
+    counts=torch.zeros(paths,device=H.device,dtype=torch.long)
+    threshold=float(cfg.get('active_threshold',1e-4))
+    for step in range(maximum):
+        coefficient=(-gradient/diagonal[:,None].clamp_min(1e-30)).clamp(0,1)
+        change=gradient*coefficient+.5*diagonal[:,None]*coefficient.square()
+        available=(current==0)&(coefficient>threshold)
+        change=change.masked_fill(~available,float('inf'))
+        gain,ids=change.min(0)
+        needed=(gain<0)&(counts<maximum)
+        if not bool(needed.any()):
+            break
+        added=coefficient[ids,columns]*needed
+        current[ids,columns]+=added
+        counts+=needed
+        a_columns=H[:,ids]+2*beta*rscale*(P@P[ids].T)
+        gradient+=a_columns*added[None,:]
+        if (step+1)%64==0:
+            gradient=H@current+2*beta*rscale*(P@(P.T@current))-target+lams
+        if step==0 or (step+1)%64==0 or step+1==maximum:
+            print(f'[{label}:support] forward={step+1}/{maximum}',flush=True)
+    return current,counts.cpu().tolist()
+
+
+def forward_budget(seed, original_weights, H, P, beta, rscale, lambdas, cfg, label):
+    """Protect the exchange/refit candidate at EACH lambda, before selection."""
+    from .u_varfs import _objective_certificate
+    forward,counts=objective_forward(H,P,beta,rscale,lambdas,cfg,label)
+    fitted,info=refit_fixed_support(forward,original_weights,H,P,beta,rscale,lambdas,cfg,label)
+    paths=seed.shape[1]
+    candidates=torch.cat([seed,forward,fitted],1)
+    objective=_objective_certificate(candidates,H,P,beta,rscale,list(lambdas)*3)['objective'].reshape(3,paths)
+    missing=1-candidates
+    error=torch.sqrt(((missing*(H@missing)).sum(0)/H.sum().clamp_min(1e-12)).clamp_min(0)).reshape(3,paths)
+    nonzero=(candidates>0).sum(0).reshape(3,paths)
+    required=torch.minimum(nonzero[0],torch.full_like(nonzero[0],min(int(cfg.get('min_features',32)),H.shape[0])))
+    allowed=(objective<=objective[0])&(error<=error[0])&(nonzero>=required)
+    choice=objective.masked_fill(~allowed,float('inf')).argmin(0)
+    chosen=candidates[:,choice*paths+torch.arange(paths,device=H.device)]
+    diagnostics=[]
+    for j,index in enumerate(choice.cpu().tolist()):
+        diagnostics.append({'forward_source':['exchange_refit','objective_forward','objective_forward_refit'][index],
+            'forward_candidate_insertions':counts[j],'forward_candidate_accepted':index!=0,
+            'forward_support_refit_iterations':info['iterations'],
+            'exchange_refit_budgeted_objective':float(objective[0,j]),
+            'exchange_refit_geometry_error':float(error[0,j]),
+            'forward_objective_improvement':float(objective[0,j]-objective[index,j]),
+            'forward_geometry_improvement':float(error[0,j]-error[index,j]),
+            'forward_fixed_support_box_gap':info['fixed_support_box_gap'][j] if index==2 else None,
+            'forward_fixed_support_converged':info['fixed_support_converged'][j] if index==2 else None})
+    return chosen,diagnostics

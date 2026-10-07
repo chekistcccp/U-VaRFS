@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v10-layer-normalization-ablation
+results_dir: results/gpu-eval-v11-forward-budget-audit
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -42,7 +42,7 @@ asls:
   max_layers: 6
 
 uvarfs:
-  sparsity_strategy: objective_exchange_refit
+  sparsity_strategy: objective_forward_refit
   support_refit_max_iter: 2000
   support_exchange_max_steps: 8
   support_exchange_chunk: 256
@@ -81,6 +81,7 @@ methods:
   - asls_gate_prefix_uvarfs
   - asls_top_weights_uvarfs
   - asls_prune_refit_uvarfs
+  - asls_exchange_refit_uvarfs
   - legacy_main
 
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]

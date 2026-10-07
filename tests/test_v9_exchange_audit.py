@@ -79,7 +79,7 @@ def test_v9_path_protects_v8_and_retains_exact_v8_control(beta):
     gen=torch.Generator().manual_seed(23)
     x=torch.randn(48,12,generator=gen)
     v=torch.rand(3,12,generator=gen)
-    cfg={'beta':beta,'lambda_grid':[.01,.001,.0001],'min_features':2,'max_features':4,
+    cfg={'sparsity_strategy':'objective_exchange_refit','beta':beta,'lambda_grid':[.01,.001,.0001],'min_features':2,'max_features':4,
          'geometry_tolerance':.02,'max_iter':150,'support_refit_max_iter':200,
          'support_exchange_max_steps':3,'support_exchange_chunk':3,'tol':1e-6,'diagnose_infeasible':True}
     result=fit_uvarfs(x,v,cfg)

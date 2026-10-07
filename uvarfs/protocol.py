@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 from .representation import normalization_modes, normalization_prefix
 
-EXPERIMENT_VERSION = 'gpu-eval-v10-layer-alignment'
+EXPERIMENT_VERSION = 'gpu-eval-v11-forward-budget-audit'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
