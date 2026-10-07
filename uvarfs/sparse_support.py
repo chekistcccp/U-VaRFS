@@ -174,3 +174,96 @@ def refine_budget(weights,H,P,beta,rscale,lambdas,cfg,label):
             'support_refit_iterations':refit['iterations'],
             'support_optimality_scope':'fixed_support_only'})
     return retained,diagnostics
+
+
+def objective_exchange(seed, H, P, beta, rscale, lambdas, cfg, label):
+    """Exchange one retained dimension with one omitted dimension per lambda.
+
+    Minimize the exact two-coordinate loss change over the new coefficient in
+    [0,1]. Unlike deletion alone, this can revisit omitted dimensions. Each
+    accepted exchange preserves cardinality and decreases both the ORIGINAL
+    objective and its representation term. No support-global optimality claim.
+    """
+    current=seed.clone()
+    steps=int(cfg.get('support_exchange_max_steps',8))
+    chunk=int(cfg.get('support_exchange_chunk',256))
+    minimum_gain=float(cfg.get('support_exchange_min_improvement',1e-8))
+    if steps<0 or chunk<1 or not 0<minimum_gain<float('inf'):
+        raise ValueError('invalid support exchange numerical budget')
+    paths=current.shape[1]; m=current.shape[0]
+    columns=torch.arange(paths,device=current.device)
+    count=(current>0).sum(0)
+    width=max(int(count.max().item()),1)
+    target=H.sum(1,keepdim=True)
+    lams=torch.as_tensor(lambdas,device=H.device,dtype=H.dtype)[None,:]
+    hdiag=H.diagonal()
+    adiag=hdiag+2*beta*rscale*P.square().sum(1)
+    exchanges=torch.zeros(paths,device=H.device,dtype=torch.long)
+    for step in range(steps):
+        # Stable order resolves equal-loss candidates without RNG consumption.
+        ids=torch.argsort(current.T,descending=True,stable=True)[:,:width]
+        removed=current.T.gather(1,ids)
+        valid=removed>0
+        rep_grad=H@current-target
+        gradient=rep_grad+2*beta*rscale*(P@(P.T@current))+lams
+        remove_loss=.5*adiag[ids]*removed.square()-gradient.T.gather(1,ids)*removed
+        remove_rep=.5*hdiag[ids]*removed.square()-rep_grad.T.gather(1,ids)*removed
+        best=torch.full((paths,),-minimum_gain,device=H.device,dtype=H.dtype)
+        best_out=ids[:,0].clone(); best_in=best_out.clone()
+        best_weight=torch.zeros(paths,device=H.device,dtype=H.dtype)
+        for start in range(0,m,chunk):
+            end=min(start+chunk,m)
+            cross=H[start:end,ids].permute(1,0,2)
+            a_cross=cross+2*beta*rscale*torch.einsum('mv,ckv->cmk',P[start:end],P[ids])
+            conditional=gradient[start:end].T[:,:,None]-a_cross*removed[:,None,:]
+            coefficient=(-conditional/adiag[start:end].clamp_min(1e-30)[None,:,None]).clamp(0,1)
+            loss=remove_loss[:,None,:]+conditional*coefficient+.5*adiag[start:end][None,:,None]*coefficient.square()
+            rep=remove_rep[:,None,:]+(rep_grad[start:end].T[:,:,None]-cross*removed[:,None,:])*coefficient+.5*hdiag[start:end][None,:,None]*coefficient.square()
+            allowed=(current[start:end].T[:,:,None]==0)&valid[:,None,:]
+            allowed &= (coefficient>float(cfg.get('active_threshold',1e-4)))&(rep<=0)
+            values,flat=loss.masked_fill(~allowed,float('inf')).flatten(1).min(1)
+            better=values<best
+            outgoing=ids.gather(1,(flat%width)[:,None]).squeeze(1)
+            incoming=start+flat//width
+            new_weight=coefficient.flatten(1).gather(1,flat[:,None]).squeeze(1)
+            best=torch.where(better,values,best)
+            best_out=torch.where(better,outgoing,best_out)
+            best_in=torch.where(better,incoming,best_in)
+            best_weight=torch.where(better,new_weight,best_weight)
+        changed=best_weight>0
+        if not bool(changed.any()):
+            break
+        current[best_out[changed],columns[changed]]=0
+        current[best_in[changed],columns[changed]]=best_weight[changed]
+        exchanges+=changed
+        print(f'[{label}:support] exchange={step+1}/{steps} changed_paths={int(changed.sum())}',flush=True)
+    return current,exchanges.cpu().tolist()
+
+
+def exchange_budget(seed, original_weights, H, P, beta, rscale, lambdas, cfg, label):
+    """Protect the v8 candidate independently for every lambda, including refit."""
+    from .u_varfs import _objective_certificate
+    exchanged,counts=objective_exchange(seed,H,P,beta,rscale,lambdas,cfg,label)
+    fitted,info=refit_fixed_support(exchanged,original_weights,H,P,beta,rscale,lambdas,cfg,label)
+    paths=seed.shape[1]
+    candidates=torch.cat([seed,exchanged,fitted],1)
+    objective=_objective_certificate(candidates,H,P,beta,rscale,list(lambdas)*3)['objective'].reshape(3,paths)
+    missing=1-candidates
+    error=torch.sqrt(((missing*(H@missing)).sum(0)/H.sum().clamp_min(1e-12)).clamp_min(0)).reshape(3,paths)
+    nonzero=(candidates>0).sum(0).reshape(3,paths)
+    required=torch.minimum(nonzero[0],torch.full_like(nonzero[0],min(int(cfg.get('min_features',32)),H.shape[0])))
+    allowed=(objective<=objective[0])&(error<=error[0])&(nonzero>=required)
+    choice=objective.masked_fill(~allowed,float('inf')).argmin(0)
+    chosen=candidates[:,choice*paths+torch.arange(paths,device=seed.device)]
+    diagnostics=[]
+    for j,index in enumerate(choice.cpu().tolist()):
+        diagnostics.append({'exchange_source':['prune_refit','objective_exchange','objective_exchange_refit'][index],
+            'exchange_steps':counts[j],
+            'exchange_support_refit_iterations':info['iterations'],
+            'prune_refit_budgeted_objective':float(objective[0,j]),
+            'prune_refit_geometry_error':float(error[0,j]),
+            'exchange_objective_improvement':float(objective[0,j]-objective[index,j]),
+            'exchange_geometry_improvement':float(error[0,j]-error[index,j]),
+            'exchange_fixed_support_box_gap':info['fixed_support_box_gap'][j] if index==2 else None,
+            'exchange_fixed_support_converged':info['fixed_support_converged'][j] if index==2 else None})
+    return chosen,diagnostics

@@ -91,6 +91,42 @@ def markdown_table(frame, columns):
     return '\n'.join(lines)
 
 
+def audit_sparse_path(result, cfg):
+    """Verify normal-only budget guards, independently of anomaly metrics."""
+    path=result['lambda_path']
+    dimension=len(result['weights'])
+    minimum=min(int(cfg['min_features']),dimension)
+    maximum=min(int(cfg['max_features']),dimension)
+    if [p['lambda'] for p in path]!=[float(x) for x in cfg['lambda_grid']]:
+        raise ValueError('U-VaRFS selection path differs from the configured lambdas')
+    for point in path:
+        if not minimum<=point['retained_features']<=maximum:
+            raise ValueError('U-VaRFS path exceeds its feature budget')
+        expected=point['geometry_error']<=cfg['geometry_tolerance'] and point['nonzero_features']>=minimum
+        if bool(point['feasible'])!=expected:
+            raise ValueError('U-VaRFS path feasibility differs from the actual budgeted geometry')
+    feasible=[p for p in path if p['feasible']]
+    selected=min(feasible,key=lambda p:(p['retained_features'],p['geometry_error'])) if feasible else min(path,key=lambda p:p['geometry_error'])
+    if selected['lambda']!=result['lambda']:
+        raise ValueError('U-VaRFS selected lambda violates its normal-only selection rule')
+    for key in ['legacy_top_weights','prune_refit']:
+        if key not in result:
+            continue
+        old=result[key]['lambda_path']
+        if len(old)!=len(path):
+            raise ValueError('U-VaRFS control has a different lambda path')
+        for actual,reference in zip(path,old):
+            if actual['lambda']!=reference['lambda'] or actual['budgeted_objective']>reference['budgeted_objective']+1e-7 or actual['geometry_error']>reference['geometry_error']+1e-7:
+                raise ValueError('U-VaRFS refinement violates its per-lambda objective/geometry guard')
+    sources={}
+    for point in path:
+        key=point.get('budget_source','top_weights'); sources[key]=sources.get(key,0)+1
+    return {'points':len(path),'budget_sources':sources,'selected_budget_source':selected.get('budget_source','top_weights'),
+            'selected_continuous_geometry_error':selected['continuous_geometry_error'],
+            'selected_nonzero_features':selected['nonzero_features'],
+            'selection_and_guards_verified':True}
+
+
 def audit(results: Path, output: Path, draws: int):
     validate_output(results,output)
     hashes=source_hashes(results)
@@ -162,7 +198,7 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
         for method in ['asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
-                       'asls_top_weights_uvarfs','legacy_main']:
+                       'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','legacy_main']:
             if method in source.method.values:
                 comparisons[method]=[method]
         intervals=paired_bootstrap(predictions,comparisons,draws=draws)
@@ -177,6 +213,13 @@ def audit(results: Path, output: Path, draws: int):
                                 'image_positive_prevalence':float(y.mean()),'main_image_auprc':float(main.image_auprc)})
         a=json.loads((folder/'asls.json').read_text())
         uv=json.loads((folder/'uvarfs_main.json').read_text())
+        sparse_audit=audit_sparse_path(uv,cfg['uvarfs'])
+        normal_geometry=None
+        if (folder/'normal_geometry_audit.json').is_file():
+            normal_geometry=json.loads((folder/'normal_geometry_audit.json').read_text())
+            expected_rows=sum(batch['batch_images']*len(batch['patch_indices']) for batch in fit['sampled_patches'])
+            if normal_geometry['selection_candidate'] is not False or normal_geometry['normal_geometry_rows']!=expected_rows:
+                raise ValueError(f'{dataset}: normal geometry audit has incorrect scope or sample count')
         selected=next(point for point in uv['lambda_path'] if point['lambda']==uv['lambda'])
         lambda_rows.extend({'dataset':dataset,**point,'selected':point['lambda']==uv['lambda']}
                            for point in uv['lambda_path'])
@@ -197,6 +240,7 @@ def audit(results: Path, output: Path, draws: int):
                             'budgeted_box_optimality_gap':uv.get('budgeted_box_optimality_gap'),
                             'fixed_support_box_gap':uv.get('fixed_support_box_gap'),
                             'lambda':uv['lambda'],'iterations':uv['solver_iterations'],
+                            'sparse_path_audit':sparse_audit,'normal_cosine_geometry':normal_geometry,
                             'mask_coverage':{k:len(v) if isinstance(v,list) else v for k,v in cov.items()},
                             'config':cfg})
         source['method_family']=source.method.str.replace(r'_seed\d+$','',regex=True)
@@ -257,7 +301,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda x:f'{100*x:.2f}' if pd.notna(x) else 'n.a.')
     comparison=pd.DataFrame({'dataset':DATASETS})
-    families=['main','legacy_main','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
+    families=['main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
               'asls_pooled_uvarfs','asls_raw','fixed4_raw','all_raw','randomk_raw','asls_random','asls_pca']
     wins={}
     for family in families:
@@ -278,6 +322,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         'consensus_gram_off_diagonal_mean':d['consensus_off_diagonal_mean'],
         'gate_probability_span':d['probability_span'],
         'gate_variability_rank_correlation':d['gate_variability_rank_correlation'],
+        'uniform_gate_loss_slope':float(d['config']['asls']['sparsity_weight'])-1,
         'gates_near_all_open':d['gates_near_all_open']} for d in data['diagnostics']])
     lambda_path=pd.read_csv(output/'main_lambda_path.csv')
     budget_rows=[]
@@ -299,6 +344,10 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         f'Main Macro Image AUROC={100*macro["main"]:.2f}%，Fixed-4 Raw={100*macro["fixed4_raw"]:.2f}%，同 K Random Raw 五 seeds 均值={100*macro["randomk_raw"]:.2f}%。Main 在 {wins["fixed4_raw"]}/6 数据集高于 Fixed-4，在 {wins["randomk_raw"]}/6 高于 Random-K 均值。','']
     if 'asls_pooled_uvarfs' in macro:
         lines.extend([f'同轮 Main 比 pooled U-VaRFS 的 macro AUROC 高 {100*(macro["main"]-macro["asls_pooled_uvarfs"]):.2f} 个百分点。它比较 normal geometry 输入及其产生的选层；跨版本差异还含数值实现变化，不全部归因于 patch。',''])
+    if 'legacy_main' in macro:
+        lines.extend([f'同轮旧整体流程 legacy_main Macro Image AUROC={100*macro["legacy_main"]:.2f}%；Main 相差 {100*(macro["main"]-macro["legacy_main"]):+.2f} 个百分点。该对照与 Main 共享本轮正常扰动和 memory，避免将跨版本随机实现差异误归因于稀疏算法。',''])
+        if 'asls_top_weights_uvarfs' in macro:
+            lines.extend([f'同一 Main 选层上的特征算法对照 asls_top_weights_uvarfs={100*macro["asls_top_weights_uvarfs"]:.2f}%，Main 差值为 {100*(macro["main"]-macro["asls_top_weights_uvarfs"]):+.2f} 个百分点。结合 prefix 对照，可区分选层变化与特征求解变化；不能将稀疏/几何达标写成检测性能已改善。',''])
     lines.extend(['## 来源与完整性','',
         f'Git `{data["git_revision"]}`；code `{data["code_fingerprint"]}`；config `{data["config_fingerprint"]}`。六份元数据一致，源码 Git blobs 验证结果：{data["git_blob_code_verified"]}。',
         '全局/逐数据集 CSV 一致；全部逐图 AUROC/AP 独立重算一致，family mean/sample SD 一致；正常 fit/memory manifest 与共享抽样预算通过核查。来源 SHA256 在 analysis_data.json，审计前后未改变原文件。',
@@ -312,14 +361,15 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         markdown_table(pairs,pairs.columns.tolist()),'',
         '未提供患者/slide 分组，区间仅以图像为抽样单位；没有多重比较校正或预设非劣界值，不宣称患者级显著性或非劣。','',
         '## 正常训练几何与数值诊断','',markdown_table(diagnostic.round(8),diagnostic.columns.tolist()),'',
-        'ASLS feasible 与 U-VaRFS feasible 分别对应实际预算后表示。前缀规则失败不证明全部组合不可行；geometry_search 穷尽整个预算仍失败才说明该采样正常几何下没有可行组合。连续 gates 接近全开，其微小排序差异不等于成功的自适应稀疏。','',
+        '均匀 gates p=t·1 时，当前 loss 精确化为 (1-t) + gamma·mean(v) + rho·t，其方向导数是 rho-1。默认 rho=0.02，方向导数 -0.98；增大所有 gates 会降低 loss。该数学诊断与 gates 全开现象相容，不能把离散组合搜索的压缩直接归功于学得了稀疏 gates。这里没有按测试指标调整 rho 或重定义 ASLS loss。','',
+        'ASLS feasible 指等权单位层 Gram 的离散容差，U-VaRFS feasible 指原目标的预算后加权 Gram 容差；它们不能直接证明 detector 再归一化后的 cosine 几何或正常近邻被保持。前缀规则失败不证明全部组合不可行；geometry_search 穷尽整个预算仍失败才说明该采样正常几何下没有可行组合。连续 gates 接近全开，其微小排序差异不等于成功的自适应稀疏。','',
         markdown_table(gate_diagnostic.round(6),gate_diagnostic.columns.tolist()),'',
         'continuous_objective_converged/box gap 对应截断前的完整连续权重，不能用来证明截断后的表示优化充分。完整 lambda path 见 main_lambda_path.csv，lambda=0 只作为诊断，见 zero_lambda_diagnostics.csv，不参与选解。', '',
         '下表是既定 path 最小 lambda 的连续解与实际预算后几何误差，不用于增改 lambda grid。','',
         markdown_table(pd.DataFrame(budget_rows).round(6),list(budget_rows[0])), '',
         '连续解较好、Top-weight 截断后误差增大，说明预算/支持集截断值得单独诊断；连续解也不可行则还可能涉及既定 variability 正则与输入几何。不能仅提高迭代数、放宽容差或用测试结果挑 beta/lambda。', '',
         '## 按原主线实施的修改','',
-        f'本轮 ASLS 离散规则为 {data["diagnostics"][0].get("discrete_selection","gate_prefix")}，特征稀疏策略为 {data["diagnostics"][0].get("sparsity_strategy","top_weights")}。规则由运行前配置和用户授权固定，不按 test AUROC 择优。历史 v7 使用 prefix 与组合搜索消融；v8 按用户指令升级组合搜索，并保留 prefix、旧 Top-weight 和 legacy_main 对照。','',
+        f'本轮 ASLS 离散规则为 {data["diagnostics"][0].get("discrete_selection","gate_prefix")}，特征稀疏策略为 {data["diagnostics"][0].get("sparsity_strategy","top_weights")}。规则由运行前配置和用户授权固定，不按 test AUROC 择优。v8 保留 prefix、旧 Top-weight 和 legacy_main 对照；v9 再保留同层的 v8 prune/refit 对照。','',
         'v8 特征剪枝使用原目标的精确单维删除损失，随后在固定支持集重优化同一目标。每个 lambda 保留旧截断候选，只有正常训练目标与几何误差均不变差的候选可被接受。这不保证异常 AUROC/AUPRO 提升；固定支持集 gap 不证明全局最佳稀疏支持集。','',
         'U-VaRFS 目标、beta/lambda、维度与数据预算不变，新增预算后原目标值/box gap 与固定支持集几何下界。H 元素非负，因此在固定支持集上将允许权重设为 1 可得其最小几何误差；这不是全体 256 维组合的最优性证明，不作为新的选解候选。', '',
         '## 压缩与效率','',
@@ -332,6 +382,26 @@ def write_current_report(output,df,summary,paired,prevalence,data):
     if 'brain' in main.index and 'fixed4_raw' in macro:
         fixed=df[(df.dataset=='brain')&(df.method=='fixed4_raw')].iloc[0]
         lines[5:5]=[f'Brain 是明确短板：Main Image AUROC={100*main.loc["brain","image_auroc"]:.2f}% vs Fixed-4 {100*fixed.image_auroc:.2f}%；Pixel AP={100*main.loc["brain","pixel_auprc"]:.2f}% vs {100*fixed.pixel_auprc:.2f}%。','']
+    normal_rows=[]
+    for diagnostic in data['diagnostics']:
+        audit=diagnostic.get('normal_cosine_geometry')
+        if audit is None:
+            continue
+        point=audit['methods']['main']
+        normal_rows.append({'dataset':diagnostic['dataset'],
+            'unit_layer_vs_raw_full_error':audit['unit_layer_consensus_vs_raw_full_cosine_error'],
+            'main_vs_raw_full_cosine_error':point['vs_raw_full_hierarchy']['cosine_gram_relative_error'],
+            'normal_1nn_agreement':point['vs_raw_full_hierarchy']['normal_patch_1nn_agreement'],
+            'main_vs_selected_raw_cosine_error':point['vs_selected_raw_cosine']['cosine_gram_relative_error']})
+    lines.extend(['## 稀疏求解与实际余弦几何核查','',
+        'Main 每个 lambda 的预算、可行性、原选解规则以及相对旧候选的原目标/几何保护已独立核验。正常训练量改善不保证异常性能，连续解误差已超容差时不能仅归咎于 max_features 截断。',''])
+    if normal_rows:
+        frame=pd.DataFrame(normal_rows).round(8)
+        frame.to_csv(output/'normal_cosine_geometry.csv',index=False)
+        lines.extend([markdown_table(frame,frame.columns.tolist()),'',
+            '以上是相同 fit patches 上的只读诊断，不参与层/特征/lambda 选择。近邻比较仅排除自身，包含同图 patches 且对 ties 敏感，不等同于官方 memory/test 检测结果。',''])
+    else:
+        lines.extend(['本轮没有返回原始 fit patch 矩阵及 normal_geometry_audit.json，无法从逐图预测或 Q 恢复实际 concat/再归一化 cosine 误差；不将小型数学 fixture 的差异冒充真实 BMAD 诊断。下一版本新增这项正常训练诊断，输入和主目标保持原样。',''])
     (output/'analysis.md').write_text('\n'.join(lines),encoding='utf-8')
 
 
@@ -418,10 +488,12 @@ def plot(output):
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     family=pd.read_csv(output/'family_summary.csv')
-    order=['main','asls_raw','fixed4_raw','all_raw','randomk_raw','randomk_uvarfs','asls_random','asls_pca']
+    order=['main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
+           'asls_raw','fixed4_raw','all_raw','randomk_raw','randomk_uvarfs','asls_random','asls_pca']
+    order=[name for name in order if name in family.method_family.values]
     if 'asls_pooled_uvarfs' in family.method_family.values:
         order.insert(1,'asls_pooled_uvarfs')
-    figure,axes=plt.subplots(1,2,figsize=(15,6),gridspec_kw={'width_ratios':[1.5,1]})
+    figure,axes=plt.subplots(1,2,figsize=(17,8),gridspec_kw={'width_ratios':[1.5,1]})
     values=family.pivot(index='method_family',columns='dataset',values='image_auroc_mean').loc[order,DATASETS]*100
     im=axes[0].imshow(values.to_numpy(),vmin=40,vmax=100,cmap='viridis',aspect='auto')
     axes[0].set_xticks(range(6),DATASETS,rotation=30,ha='right'); axes[0].set_yticks(range(len(order)),order)
@@ -430,10 +502,11 @@ def plot(output):
         for j in range(6):
             axes[0].text(j,i,f'{values.iloc[i,j]:.1f}',ha='center',va='center',color='white' if values.iloc[i,j]<78 else 'black')
     figure.colorbar(im,ax=axes[0],shrink=.7)
-    methods=['main','fixed4_raw','all_raw']
+    methods=[name for name in ['main','legacy_main','fixed4_raw','all_raw'] if name in family.method_family.values]
+    width=.8/len(methods)
     for j,method in enumerate(methods):
         data=family[family.method_family==method].set_index('dataset').loc[['brain','liver','resc']]
-        axes[1].bar(np.arange(3)+(j-1)*.25,data.aupro_mean*100,width=.25,label=method)
+        axes[1].bar(np.arange(3)+(j-(len(methods)-1)/2)*width,data.aupro_mean*100,width=width,label=method)
     axes[1].set_xticks(np.arange(3),['brain','liver','resc']); axes[1].set_ylabel('AUPRO (%)'); axes[1].set_ylim(0,100)
     axes[1].set_title('Localization (FPR ≤ 0.3)'); axes[1].legend(loc='lower right'); axes[1].grid(axis='y',alpha=.2)
     figure.tight_layout(); figure.savefig(output/'performance.png',dpi=180); figure.savefig(output/'performance.svg'); plt.close(figure)

@@ -202,6 +202,7 @@ def fit_asls(layer_features: dict[int, torch.Tensor], layer_variability: dict[in
         "normal_gram_geometry":{'layers':layers,'inner_products':q,
                                 'definition':'Q[l,m]=<K_l,K_m>; reference=mean(all K_l)'},
         "diagnostics":{'gates_near_all_open':saturated,'probability_span':float(np.ptp(probs)),
+                       'uniform_gate_loss_slope':rho-1,
                        'gate_variability_rank_correlation':correlation,
                        'consensus_off_diagonal_mean':off_mean,
                        'consensus_off_diagonal_std':off_std,

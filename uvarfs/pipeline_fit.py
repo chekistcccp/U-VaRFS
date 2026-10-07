@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -10,6 +11,7 @@ from .u_varfs import fit_uvarfs
 from .transforms import fit_pca
 from .utils import save_json
 from .variability import NormalVariability
+from .geometry_audit import audit_normal_geometry
 
 
 def _sample_indices(n, k, seed):
@@ -20,6 +22,11 @@ def _sample_indices(n, k, seed):
 def _patch_ids(p, k, seed):
     rng = np.random.default_rng(seed)
     return np.sort(rng.choice(p, size=min(p, k), replace=False))
+
+
+def perturbation_seed(seed, dataset, image_offset):
+    text=f'uvarfs-normal-noise-v1:{int(seed)}:{dataset}:{int(image_offset)}'
+    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8],'little') % (2**63)
 
 
 def fit_representation(extractor, train_samples, cfg, dataset_out):
@@ -42,6 +49,7 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
     statistics = {i: NormalVariability(extractor.hidden_dim, PERTURBATIONS,
                     float(cfg['data'].get('variability_epsilon',1e-6))) for i in layers}
     patch_manifest = []
+    noise_manifest=[]
     global_pos = 0
     for batch in tqdm(dl, desc="fit-features", leave=False):
         x = batch["image"]
@@ -58,10 +66,13 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
             take = min(b, var_n - global_pos)
             xvar = x[:take].cuda(non_blocking=True) if torch.cuda.is_available() else x[:take]
             base = {l: feats[l][:take] for l in layers}
+            noise_seed=perturbation_seed(seed,train_samples[0].dataset,global_pos)
+            generator=torch.Generator(device=xvar.device).manual_seed(noise_seed)
+            noise_manifest.append({'image_offset':global_pos,'batch_images':take,'seed':noise_seed})
             for l in layers:
                 statistics[l].add_normal(base[l])
             for kind in PERTURBATIONS:
-                pert = extractor(perturb_batch(xvar, kind))
+                pert = extractor(perturb_batch(xvar, kind, generator=generator))
                 for l in layers:
                     statistics[l].add_perturbation(kind,base[l],pert[l])
         global_pos += b
@@ -79,6 +90,8 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
                'variability_epsilon':float(cfg['data'].get('variability_epsilon',1e-6)),
                'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                'perturbations':list(PERTURBATIONS),
+               'perturbation_rng':{'recipe':'sha256:uvarfs-normal-noise-v1:seed:dataset:image_offset',
+                                   'base_seed':seed,'dataset':train_samples[0].dataset,'noise_batches':noise_manifest},
                'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},
               dataset_out/'fit_manifest.json')
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
@@ -183,6 +196,11 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
         save_uv('asls_top_weights',selected,obj)
         specs['asls_top_weights_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
             'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
+    if 'asls_prune_refit_uvarfs' in enabled:
+        obj=main_uv.get('prune_refit',main_uv)
+        save_uv('asls_prune_refit',selected,obj)
+        specs['asls_prune_refit_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
+            'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
     if 'legacy_main' in enabled:
         prefix=reselect_asls(asls,cfg['asls'],'gate_prefix')
         prefix_uv=fit_uv('asls_gate_prefix',prefix['selected_layers'])
@@ -221,4 +239,6 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
             if k in {'main','asls_raw','asls_pca'} or base=='asls_random':
                 v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
+    print('[fit] normal cosine geometry audit (diagnostic only)',flush=True)
+    save_json(audit_normal_geometry(patches,keep),dataset_out/'normal_geometry_audit.json')
     return keep

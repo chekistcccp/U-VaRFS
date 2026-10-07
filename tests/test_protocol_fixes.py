@@ -297,7 +297,7 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     extractor = TinyFrozenExtractor()
     specs = fit_method_specs(extractor,train,cfg,output)
     assert sorted(specs) == expected_method_names(cfg)
-    assert len(specs) == 36
+    assert len(specs) == 37
     fitted=json.loads((output/'asls.json').read_text())
     assert fitted['geometry_representation']==geometry_representation
     assert fitted['diagnostics']['normal_geometry_samples']==(16 if geometry_representation=='patch' else 4)
@@ -308,7 +308,11 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     assert specs['legacy_main']['obj']['sparsity_strategy']=='top_weights'
     assert specs['asls_top_weights_uvarfs']['layers']==specs['main']['layers']
     assert specs['asls_top_weights_uvarfs']['obj']['sparsity_strategy']=='top_weights'
-    assert specs['main']['obj']['sparsity_strategy']=='objective_prune_refit'
+    assert specs['main']['obj']['sparsity_strategy']=='objective_exchange_refit'
+    assert specs['asls_prune_refit_uvarfs']['obj']['sparsity_strategy']=='objective_prune_refit'
+    audit=json.loads((output/'normal_geometry_audit.json').read_text())
+    assert audit['selection_candidate'] is False
+    assert audit['normal_geometry_rows']==16
     search=json.loads((output/'asls_geometry_search.json').read_text())
     for kind in ['raw','uvarfs']:
         assert specs[f'asls_geometry_search_{kind}']['layers']==search['selected_layers']
@@ -335,6 +339,7 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
         assert specs[f'randomk_raw_seed{seed}']['layers'] == specs[f'randomk_uvarfs_seed{seed}']['layers']
     manifest=json.loads((output/'fit_manifest.json').read_text())
     assert manifest['asls_geometry_representation']==geometry_representation
+    assert manifest['perturbation_rng']['base_seed']==cfg['seed']
     assert set(manifest['normal_train_paths']) == {str(s.image) for s in train}
     # Duplicate representations must yield exactly the same memory rows,
     # including reservoir replacement when sampled rows exceed capacity.

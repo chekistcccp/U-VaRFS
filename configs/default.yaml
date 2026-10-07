@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v8-objective-sparsity
+results_dir: results/gpu-eval-v9-support-exchange-audit
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
@@ -37,8 +37,11 @@ asls:
   max_layers: 6
 
 uvarfs:
-  sparsity_strategy: objective_prune_refit
+  sparsity_strategy: objective_exchange_refit
   support_refit_max_iter: 2000
+  support_exchange_max_steps: 8
+  support_exchange_chunk: 256
+  support_exchange_min_improvement: 1.0e-8
   beta: 0.002
   lambda_grid: [0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001, 0.00005, 0.00002, 0.00001, 0.000005, 0.000002, 0.000001]
   geometry_tolerance: 0.05
@@ -72,6 +75,7 @@ methods:
   - asls_gate_prefix_raw
   - asls_gate_prefix_uvarfs
   - asls_top_weights_uvarfs
+  - asls_prune_refit_uvarfs
   - legacy_main
 
 random_baseline_seeds: [42, 123, 3407, 2026, 2027]

@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v8-objective-sparsity`**。按用户“换一种稀疏方式、再改进”的指令，主 ASLS 使用正常几何组合搜索，U-VaRFS 使用原目标驱动剪枝与固定支持集重优化。原数学目标、无异常标签约束和统一数据/表示预算保持；旧规则对照与所有原 baseline 保留，共 36 方法。算法、保护条件和复跑步骤见 [OBJECTIVE_SPARSITY_UPGRADE.md](OBJECTIVE_SPARSITY_UPGRADE.md)。新版真实性能仍需服务器验证。
+> **当前实现版本：`gpu-eval-v9-support-exchange-audit`**。保持已授权的 normal patch ASLS 组合搜索，在同一 U-VaRFS 目标下增加预算内维度交换与 refit，保留 v8 同层对照和全部原 baseline，共 37 方法。固定正常扰动 RNG 并新增实际 cosine 几何的只读诊断；特征归一化、损失、beta/lambda、数据/表示预算和 detector 保持。算法、范围检查与服务器复跑步骤见 [SUPPORT_EXCHANGE_AUDIT.md](SUPPORT_EXCHANGE_AUDIT.md)。新版真实性能仍需服务器验证。
 
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  

@@ -397,14 +397,17 @@ Rw=P(P^Tw)
 
 因此无需显式构造大的 (R=PP^T)。
 
-v8 在连续 path 后使用原目标的精确单维删除损失做预算内剪枝，并对固定支持集重优化同一目标；旧 Top-weight 截断保留消融。每个 lambda 只接受原正常训练目标与几何误差均不变差的候选。这是用户授权的稀疏求解算法升级，不是新损失函数；固定支持集收敛也不证明全局稀疏最优。完整定义和保护条件见第 32 节。
+在连续 path 后使用原目标的精确单维删除损失做预算内剪枝与 refit；v9 再增加预算内两维交换和 refit。旧 Top-weight、v8 prune/refit 保留消融。每个 lambda 只接受原正常训练目标与几何误差均不变差的候选。这延续用户已授权的稀疏求解算法升级，不是新损失函数；固定支持集收敛不证明全局稀疏最优。完整定义和保护条件见第 33 节。
 
 当前默认：
 
 ```yaml
 beta: 0.002
-sparsity_strategy: objective_prune_refit
+sparsity_strategy: objective_exchange_refit
 support_refit_max_iter: 2000
+support_exchange_max_steps: 8
+support_exchange_chunk: 256
+support_exchange_min_improvement: 1e-8
 lambda_grid:
   [0.05, 0.02, 0.01, 0.005, 0.002, 0.001,
    0.0005, 0.0002, 0.0001, 0.00005,
@@ -804,7 +807,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v8-objective-sparsity
+gpu-eval-v9-support-exchange-audit
 ```
 
 原因：
@@ -922,7 +925,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v8-objective-sparsity
+experiment_version = gpu-eval-v9-support-exchange-audit
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1262,7 +1265,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 32. 2026-10-07 用户授权升级稀疏方式（当前开发状态）
+# 32. 2026-10-07 用户授权升级稀疏方式（v8 开发记录）
 
 用户明确要求：**“能否换一种性能更好的稀疏方式？再改进一下”**。据此升级主稀疏算法，无需再次确认相同升级；第 31 节的待批准状态已由本次指令取代。
 
@@ -1276,3 +1279,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 实际 detector 权重与连续权重、预算后与固定支持集证书分别保存。旧结果不可覆盖/混合；结果和分析继续仅本地，代码改进按第 28 节提交推送。
 
 60 项本地 CPU 检查通过，1 项 CUDA 对照因本机没有 runtime 跳过。真实数据/模型与 CUDA PyTorch 不在本机，未验证 v8 真实性能；先服务器 Liver，再 BMAD 全六。
+
+---
+
+# 33. 2026-10-07 v9 支持集交换与实际余弦几何诊断（当前状态）
+
+当前版本 `gpu-eval-v9-support-exchange-audit`；独立输出 `results/gpu-eval-v9-support-exchange-audit/`。开发与复跑说明见 [SUPPORT_EXCHANGE_AUDIT.md](SUPPORT_EXCHANGE_AUDIT.md)。延续第 32 节用户已授权的稀疏求解改进，回传结果与分析按第 28 节仅保留本地。
+
+- ASLS patch 输入、等权单位层 Gram、sigmoid/Adam/loss、组合搜索、层预算/容差均保持。新增均匀 gate 方向斜率 `rho-1` 的解析诊断，不调 rho，也不将离散压缩宣称为学得稀疏 gates。
+- U-VaRFS 为 `objective_exchange_refit`：原 batched FISTA → 原目标删除/refit → 精确两坐标交换/refit。只使用 H、P/rscale 与既定 beta/lambda；原目标、预算、label-free 选解规则不变。每个 lambda 保留 v8 候选，只接受原目标与训练几何均不变差且满足原非零约束的表示；不保证 AD 提升或全局稀疏最优。
+- 所有新版 U-VaRFS 统一 `support_exchange_max_steps=8`、chunk=256、min improvement=1e-8、refit max=2000。旧 Top-weight、prefix、legacy_main 和全部原 baseline 保留，新增同层 `asls_prune_refit_uvarfs`，默认共 37 方法。固定支持 gap 对交换后的实际支持重新计算；连续/预算后/固定支持作用域分开。
+- 正常 noise 使用显式 generator，SHA256 recipe 包含 cfg seed、dataset、image offset，完整清单写入 `fit_manifest.json` 的 `perturbation_rng`。不再依赖前序 PCA、全局 RNG 或 resume；扰动定义/幅度、normal fit/variability/memory 数据预算保持。跨版本噪声实现变化需用同轮控制区分，不声称 CPU/CUDA 逐位一致。
+- `normal_geometry_audit.json` 复用已有 fit patches，只读且 `selection_candidate=false`。分别记录单位层 ASLS geometry、raw concat cosine、U-VaRFS 加权 Gram、实际行归一化 cosine 与正常 patch 近邻差异；不改变输入归一化、不参与训练选择、不用异常标签/masks。近邻仅排除自身，不能替代官方 memory/test 指标。诊断时间/显存计入共享 fit 开销。
+- Frozen DINOv3、全部层候选、BMAD 全六、cosine 1-NN、Top-1% 与 pixel evaluation 保持。新增实验不得覆盖/混合旧结果；分析脚本独立核验 Main lambda 选择、每点预算与旧候选保护，并复核原始产物哈希。
+
+72 项本地 CPU/math/I/O 检查通过，2 项 CUDA 对照因本机无 runtime 跳过；shell/diff 检查通过。真实 BMAD 数据、模型与 CUDA PyTorch 不在本机，尚无 v9 性能，不能宣称已改善检测。先服务器 Liver：`SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`，核对 37 方法、交换日志、normal audit、manifest 和 pixel 指标后再运行全六。

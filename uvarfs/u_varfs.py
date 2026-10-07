@@ -3,7 +3,7 @@ import math, time
 import torch
 import torch.nn.functional as F
 from .numerics import precise_matmul
-from .sparse_support import refine_budget
+from .sparse_support import refine_budget, exchange_budget
 
 
 def _r_scale(H: torch.Tensor, P: torch.Tensor) -> float:
@@ -234,7 +234,21 @@ def _selection_result(W,selection,lambdas,L,iterations,seconds,strategy):
         **{k:v for k,v in point.items() if k.startswith('budgeted_') or k in
            {'budget_source','legacy_budgeted_objective','legacy_geometry_error','objective_improvement',
             'geometry_improvement','fixed_support_box_gap','fixed_support_converged','support_refit_iterations'}},
+        **{k:v for k,v in point.items() if k.startswith('exchange_') or k.startswith('prune_refit_')},
     }
+
+
+def _merge_exchange_diagnostics(points, previous, exchanges, retained, H, P, beta, rscale, lambdas, tol):
+    gradient=_apply_A(retained,H,P,beta,rscale)-H.sum(1,keepdim=True)+torch.as_tensor(lambdas,device=H.device,dtype=H.dtype)
+    gaps=(gradient.clamp_min(0)*retained-gradient.clamp_max(0)*(1-retained)*(retained>0)).sum(0).cpu().tolist()
+    for j,(point,old,diagnostic) in enumerate(zip(points,previous,exchanges)):
+        point.update(old); point.update(diagnostic)
+        if diagnostic['exchange_source']!='prune_refit':
+            point['budget_source']=diagnostic['exchange_source']
+            point['fixed_support_box_gap']=gaps[j]
+            point['fixed_support_converged']=gaps[j]<=tol
+            point['objective_improvement']+=diagnostic['exchange_objective_improvement']
+            point['geometry_improvement']+=diagnostic['exchange_geometry_improvement']
 
 
 @precise_matmul()
@@ -269,11 +283,11 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     tol=float(cfg.get('tol',1e-5))
     check_every=int(cfg.get('check_every',25))
     log_every=int(cfg.get('log_every',50))
-    strategy=cfg.get('sparsity_strategy','objective_prune_refit')
+    strategy=cfg.get('sparsity_strategy','objective_exchange_refit')
 
     if (not lambdas or any(not math.isfinite(lam) or lam<0 for lam in lambdas)
         or not math.isfinite(beta) or beta<0 or not math.isfinite(tol) or tol<=0
-        or max_iter<1 or check_every<1 or log_every<1 or strategy not in {'top_weights','objective_prune_refit'}):
+        or max_iter<1 or check_every<1 or log_every<1 or strategy not in {'top_weights','objective_prune_refit','objective_exchange_refit'}):
         raise ValueError('invalid U-VaRFS path or solver configuration')
     W,L,used_iter,solver=_batched_fista(
         H,P,beta,rscale,lambdas,max_iter,tol,
@@ -283,14 +297,22 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
     legacy_selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale))
     legacy=_selection_result(W,legacy_selection,lambdas,L,used_iter,time.time()-t0,'top_weights')
     selection=legacy_selection
-    if strategy=='objective_prune_refit':
+    prune_refit=None
+    if strategy!='top_weights':
         retained,support_diagnostics=refine_budget(W,H,P,beta,rscale,lambdas,cfg,label)
         selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale),retained)
         for point,diagnostic in zip(selection[3],support_diagnostics):
             point.update(diagnostic)
+        prune_refit=_selection_result(W,selection,lambdas,L,used_iter,time.time()-t0,'objective_prune_refit')
+        if strategy=='objective_exchange_refit':
+            retained,exchanges=exchange_budget(retained,W,H,P,beta,rscale,lambdas,cfg,label)
+            selection=_select_solution(W,H,lambdas,cfg,solver,(P,beta,rscale),retained)
+            _merge_exchange_diagnostics(selection[3],support_diagnostics,exchanges,retained,H,P,beta,rscale,lambdas,tol)
     result=_selection_result(W,selection,lambdas,L,used_iter,time.time()-t0,strategy)
-    if strategy=='objective_prune_refit':
+    if strategy!='top_weights':
         result['legacy_top_weights']=legacy
+    if strategy=='objective_exchange_refit':
+        result['prune_refit']=prune_refit
     print(
         f'[{label}] done: strategy={strategy} lambda={result["lambda"]:g} active={len(result["active"])}/{m} '
         f'geometry_error={result["geometry_error"]:.4f} iterations={used_iter} elapsed={result["fit_seconds"]:.1f}s',
@@ -307,10 +329,20 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
             label=f'{label}:lambda0-diagnostic')
         _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale))
         legacy['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
-        if strategy=='objective_prune_refit':
+        if strategy!='top_weights':
             retained,diagnostics=refine_budget(diagnostic_W,H,P,beta,rscale,[0.0],cfg,f'{label}:lambda0')
             _,_,_,diagnostic_path=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale),retained)
             diagnostic_path[0].update(diagnostics[0])
+            if prune_refit is not None:
+                prune_refit['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
+            if strategy=='objective_exchange_refit':
+                retained,diagnostics=exchange_budget(retained,diagnostic_W,H,P,beta,rscale,[0.0],cfg,f'{label}:lambda0')
+                _,_,_,updated=_select_solution(diagnostic_W,H,[0.0],cfg,diagnostic_solver,(P,beta,rscale),retained)
+                previous={k:v for k,v in diagnostic_path[0].items() if k in
+                    {'budget_source','legacy_budgeted_objective','legacy_geometry_error','objective_improvement','geometry_improvement',
+                     'fixed_support_box_gap','fixed_support_converged','support_refit_iterations','support_optimality_scope'}}
+                _merge_exchange_diagnostics(updated,[previous],diagnostics,retained,H,P,beta,rscale,[0.0],tol)
+                diagnostic_path=updated
         result['zero_lambda_diagnostic']={**diagnostic_path[0],'selection_candidate':False}
     return result
 
