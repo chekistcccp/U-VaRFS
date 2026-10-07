@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v12-cosine-simplex
+results_dir: results/gpu-eval-v13-evaluation-finalization
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -108,6 +108,7 @@ eval:
   resume_completed: true
   topk_fraction: 0.01
   bootstrap_samples: 1000
+  bootstrap_batch_size: 32
   save_heatmaps: true
   max_heatmaps_per_dataset: 12
   heatmap_methods: [all_raw, main]

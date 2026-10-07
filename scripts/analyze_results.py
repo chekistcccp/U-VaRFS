@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only audit/report of a complete returned BMAD run; labels are evaluation only.
+"""Read-only BMAD audit/report; --fit-only explicitly handles partial returns.
 
 No layer, lambda, representation budget or detector setting is selected here.
 The bootstrap compares the mean AUC of random seeds, not an ensemble score.
@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -305,6 +306,123 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
             if new['original_gram_selected_dimension']!=len(old['active']) or new['original_gram_selected_active']!=sorted(old['active']):
                 raise ValueError('cosine warm start disagrees with original same-input control')
     return records
+
+
+def verify_recorded_code(metadata):
+    """Read only recorded Git blobs; an unavailable revision stays unverified."""
+    revision=metadata.get('git_head','')
+    if not re.fullmatch(r'[0-9a-f]{40,64}',revision):
+        return False
+    repo=Path(__file__).resolve().parents[1]
+    try:
+        tree=subprocess.check_output(['git','ls-tree','-r','--name-only',revision],cwd=repo,text=True).splitlines()
+        paths=sorted(p for p in tree if Path(p).parent.as_posix()=='uvarfs' and p.endswith('.py'))+['scripts/run_all.py']
+        digest=hashlib.sha256()
+        for path in paths:
+            digest.update(path.encode())
+            digest.update(subprocess.check_output(['git','show',f'{revision}:{path}'],cwd=repo).replace(b'\r\n',b'\n'))
+    except (OSError,subprocess.CalledProcessError):
+        return False
+    if digest.hexdigest()!=metadata['code_fingerprint']:
+        raise ValueError('saved code fingerprint differs from its recorded Git source')
+    return True
+
+
+def audit_fit_only(results,output):
+    """Normal-fit diagnosis, never a substitute for missing anomaly metrics."""
+    from uvarfs.protocol import config_fingerprint, expected_method_names
+    validate_output(results,output)
+    hashes=source_hashes(results)
+    rows=[]; datasets=[]; versions=set()
+    for dataset in DATASETS:
+        folder=results/dataset
+        if not (folder/'run_metadata.json').is_file():
+            continue
+        metadata=json.loads((folder/'run_metadata.json').read_text(encoding='utf-8'))
+        cfg=metadata['config']; versions.add(metadata['experiment_version'])
+        if metadata['config_fingerprint']!=config_fingerprint(cfg) or sorted(metadata['expected_methods'])!=expected_method_names(cfg):
+            raise ValueError(f'{dataset}: saved normal-fit protocol differs')
+        if metadata['dataset']!=dataset:
+            raise ValueError(f'{dataset}: dataset identity differs')
+        # This frame is ONLY the declared method/input protocol, not fabricated
+        # evaluation data. No scores, labels, feature dimensions or metrics.
+        branches=sorted(experiment_branches(cfg),key=lambda b:len(b['prefix']),reverse=True)
+        declared=[]
+        for method in expected_method_names(cfg):
+            branch=next(b for b in branches if method.startswith(b['prefix']))
+            declared.append({'method':method,'layer_normalization':branch['layer_normalization'],
+                             'objective_branch':branch['objective']})
+        fit=json.loads((folder/'fit_manifest.json').read_text(encoding='utf-8'))
+        paths=fit['normal_train_paths']; ids=fit['normal_train_indices']; budget=cfg['data']
+        if (len(paths)!=len(ids) or len(set(ids))!=len(ids) or len(set(paths))!=len(paths) or
+            any('/train/good/' not in '/'+p.replace('\\','/').lower() for p in paths)):
+            raise ValueError(f'{dataset}: fit normal training manifest is inconsistent')
+        if (fit['fit_images']!=len(paths) or fit['fit_images']>budget['fit_images'] or
+            fit['variability_images']!=min(budget['variability_images'],len(paths)) or
+            fit['patches_per_image']!=budget['patches_per_image'] or
+            sum(b['batch_images'] for b in fit['sampled_patches'])!=len(paths) or
+            any(len(set(b['patch_indices']))!=len(b['patch_indices']) or len(b['patch_indices'])>budget['patches_per_image'] for b in fit['sampled_patches']) or
+            ('train_images' in metadata and len(paths)!=min(metadata['train_images'],budget['fit_images']))):
+            raise ValueError(f'{dataset}: recorded normal fit budget differs from config')
+        records=audit_representation_protocol(folder,cfg,pd.DataFrame(declared),fit)
+        solver_files=list(folder.rglob('uvarfs_*.json'))
+        for path in solver_files:
+            audit_sparse_path(json.loads(path.read_text(encoding='utf-8')),cfg['uvarfs'])
+        memory_path=folder/'memory_manifest.json'
+        memory_available=memory_path.is_file()
+        if memory_available:
+            memory=json.loads(memory_path.read_text(encoding='utf-8'))
+            if (not memory['shared_sampling_across_methods'] or sorted(memory['memory_rows'])!=expected_method_names(cfg) or
+                len(set(memory['memory_rows'].values()))!=1 or max(memory['memory_rows'].values())>cfg['data']['memory_size'] or
+                memory['memory_capacity']!=budget['memory_size'] or memory['reservoir_seed']!=cfg['seed'] or
+                len(memory['normal_train_paths'])>budget['memory_images'] or
+                len(memory['normal_train_paths'])!=len(memory['normal_train_indices']) or
+                len(set(memory['normal_train_indices']))!=len(memory['normal_train_indices']) or
+                any('/train/good/' not in '/'+p.replace('\\','/').lower() for p in memory['normal_train_paths'])):
+                raise ValueError(f'{dataset}: unequal/non-normal memory protocol')
+        for record,branch in zip(records,experiment_branches(cfg)):
+            obj=json.loads((folder/branch['folder']/'uvarfs_main.json').read_text(encoding='utf-8'))
+            actual=record['normal_cosine_geometry']['methods']['main']['vs_selected_input_cosine']
+            pool=obj.get('candidate_pool',[])
+            rows.append({'dataset':dataset,'method':record['method'],'objective':record['objective_definition'],
+                'layers':';'.join(map(str,obj['layers'])),'feature_dim':len(obj['active']),
+                'selection_geometry_error':obj['geometry_error'],'geometry_feasible':obj['feasible'],
+                'actual_cosine_geometry_error':actual['cosine_gram_relative_error'],
+                'normal_patch_1nn_agreement':actual['normal_patch_1nn_agreement'],
+                'selected_lambda':obj['lambda'],'solver_converged':obj['solver_converged'],
+                'projected_residual':obj['projected_residual'],
+                'effective_weight_dimension':obj.get('effective_weight_dimension'),
+                'candidate_count':len(pool),'stationary_candidates':sum(c['fixed_support_converged'] for c in pool),
+                'line_search_stalled_candidates':sum(c['solver_status']=='line_search_stalled' for c in pool)})
+        datasets.append({'dataset':dataset,'solver_files_checked':len(solver_files),
+            'git_blob_code_verified':verify_recorded_code(metadata),'git_head':metadata['git_head'],
+            'memory_manifest_available':memory_available,'evaluation_progress':json.loads((folder/'eval_progress.json').read_text(encoding='utf-8')) if (folder/'eval_progress.json').exists() else None,
+            'final_metrics_available':(folder/'metrics.csv').is_file(),
+            'predictions_available':(folder/'image_predictions.csv').is_file()})
+    if not datasets or len(versions)!=1:
+        raise ValueError('fit-only audit requires returned fit records from one experiment version')
+    if source_hashes(results)!=hashes:
+        raise ValueError('original experiment artifacts changed during the fit-only audit')
+    output.mkdir(parents=True,exist_ok=True)
+    frame=pd.DataFrame(rows); frame.to_csv(output/'normal_fit_summary.csv',index=False)
+    data={'analysis_scope':'normal_fit_only','anomaly_performance_assessed':False,
+          'experiment_version':next(iter(versions)),'datasets':datasets,'source_sha256':hashes}
+    (output/'analysis_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
+    columns=['dataset','method','layers','feature_dim','geometry_feasible','actual_cosine_geometry_error',
+             'normal_patch_1nn_agreement','projected_residual','effective_weight_dimension']
+    display=frame.copy()
+    for column in ['actual_cosine_geometry_error','normal_patch_1nn_agreement','projected_residual','effective_weight_dimension']:
+        display[column]=display[column].map(lambda value:f'{value:.6g}' if pd.notna(value) else 'n.a.')
+    lines=['# 回传正常拟合诊断','',f'版本：{next(iter(versions))}；可核查数据集：'+', '.join(d['dataset'] for d in datasets)+'。','',
+           '本报告只分析已回传的正常训练/拟合产物，不计算或推断异常检测性能。逐图预测与最终指标是否回传：','',
+           markdown_table(pd.DataFrame(datasets),['dataset','final_metrics_available','predictions_available','git_blob_code_verified']),'',
+           '## 正常几何与稀疏','',markdown_table(display,columns),'',
+           'geometry_feasible 只表示对应目标的训练几何满足预设容差。actual cosine 全局 Gram 误差降低不保证局部最近邻更好；normal_patch_1nn_agreement 仅是采样正常 patch 的诊断，不是 AUROC/AUPRO。','',
+           '固定支持残差与几何可行性分别报告。line_search_stalled 或 iteration_limit 不能表述为已收敛；新目标也没有原 quadratic 的全局凸证书。','',
+           'test 进度 100% 仅表示 DINO/NN 前向完成。原实现随后逐方法 bootstrap，预测在全部统计后才落盘；没有退出日志时不能将该状态判定为崩溃。','',
+           '训练目标、ASLS、raw Main、beta/lambda/K、正常数据预算与 cosine detector 均保持；此次仅修改统计收尾的等价计算、预测提前保存与阶段进度。最终仍须完整 BMAD 六数据集和全部对照，不能用缺失的检测指标调参。','']
+    (output/'analysis.md').write_text('\n'.join(lines),encoding='utf-8')
+    return data
 
 
 def audit(results: Path, output: Path, draws: int):
@@ -834,7 +952,13 @@ def main():
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--bootstrap',type=int,default=2000)
     parser.add_argument('--plots-only',action='store_true')
+    parser.add_argument('--fit-only',action='store_true',help='audit returned normal-fit artifacts without claiming anomaly performance')
     args=parser.parse_args()
+    if args.fit_only:
+        if args.results is None or args.plots_only:
+            parser.error('--fit-only requires --results and cannot be combined with --plots-only')
+        audit_fit_only(args.results,args.out)
+        return
     if args.plots_only:
         plot(args.out)
     else:

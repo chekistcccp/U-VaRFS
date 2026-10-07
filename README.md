@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v12-cosine-simplex`**。用户已批准 U-VaRFS 目标升级为实际 cosine geometry + simplex 相对权重 + normal-reference variability + cardinality 稀疏。原 quadratic/v11 solver 保留完整 `gram_*` 控制，与原始/L2 输入形成四支，共 152 方法；共享正常数据、扰动、DINO forward、ASLS 和 memory 抽样，各支 PCA/Random 匹配自己的 Main 维数。ASLS、数据/维度预算、Frozen backbone 与 cosine 1-NN 保持。说明见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)，真实性能须服务器验证。
+> **当前实现版本：`gpu-eval-v13-evaluation-finalization`**。主方法仍是已批准的实际 cosine geometry + simplex 相对权重 + normal-reference variability + cardinality 稀疏。原 quadratic/v11 solver 保留完整 `gram_*` 控制，与原始/L2 输入形成四支，共 152 方法；所有正常数据、ASLS、预算和 detector 保持。v13 仅等价加速 bootstrap、在统计前保存预测/点估计并增加统计阶段进度；不以局部回传调整训练。方法见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)，收尾与部分回传诊断见 [EVALUATION_FINALIZATION.md](EVALUATION_FINALIZATION.md)。
 
 原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；本次授权仅覆盖上述 U-VaRFS 数学升级。
 

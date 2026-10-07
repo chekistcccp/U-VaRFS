@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前实验状态见第 37 节（v12 已批准的 cosine/simplex U-VaRFS）**。用户已批准目标升级；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
+> **当前工程状态见第 38 节（v13 评价收尾修正）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
 
 ---
 
@@ -827,7 +827,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v12-cosine-simplex
+gpu-eval-v13-evaluation-finalization
 ```
 
 原因：
@@ -945,7 +945,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v12-cosine-simplex
+experiment_version = gpu-eval-v13-evaluation-finalization
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1361,7 +1361,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 37. 2026-10-07 用户批准 cosine/simplex U-VaRFS（当前状态）
+# 37. 2026-10-07 用户批准 cosine/simplex U-VaRFS（当前主方法；v12 开发记录）
 
 用户明确批准：**“批准设计的改进，修改对应代码并同步到仓库”**。目标升级已经接入，不重复询问相同授权。版本 `gpu-eval-v12-cosine-simplex`，独立输出 `results/gpu-eval-v12-cosine-simplex/`；开发、数学、配置和第 19 节检查见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)。
 
@@ -1373,3 +1373,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 实验、图表、日志和报告依第 28 节仅留本地；代码、配置、测试及开发交接检查通过后提交推送。真实数据/模型/CUDA 不在本工作机，数学/CPU fixture 不能证明正向 AUROC/AUPRO；服务器先 Liver 验证运行，再固定设计全六，不用 Liver test 指标调参。
 
 115 项本地数学/CPU/I/O 回归检查通过，4 项 CUDA 检查因本机缺少 runtime 跳过；shell/diff 检查通过。验证包括独立 autograd/有限差分梯度、SciPy 固定支持 simplex 解、两种 primary 配置的 152 方法 fit/memory/image/pixel 流程、完整分支 resume 与新报告字段。历史分析兼容性复核通过，原回传文件未改写。真实 BMAD 检测收益仍待服务器固定设计实验。
+
+---
+
+# 38. 2026-10-07 v13 评价统计收尾修正（当前工程状态）
+
+版本 `gpu-eval-v13-evaluation-finalization`；独立输出 `results/gpu-eval-v13-evaluation-finalization/`。主方法仍为第 5.4/37 节已批准的 cosine/simplex/cardinality U-VaRFS；详细工程定义与第 19 节检查见 [EVALUATION_FINALIZATION.md](EVALUATION_FINALIZATION.md)。实验结果、图表、日志与分析仍按第 28 节只留本地。
+
+- 原 test heartbeat 仅覆盖 DINO/NN 前向；随后逐方法 bootstrap，没有统计阶段进度，全部完成后才保存预测。`test=100%` 不能单独说明最终指标完成或程序崩溃。
+- bootstrap 仅等价加速：排序固定 scores 一次，按图像 multiplicity 与 ties 计算 AUROC，原 integers 有放回 RNG 流、非分层定义、1000 draws、seed、单类别跳过和 percentile 均保持；批次大小 32 写入配置。不能混同完整分析脚本的分层配对 bootstrap，也不作为论文创新。
+- 前向结束先原子保存 `image_predictions.csv`，image/pixel 点估计保存至 `evaluation_metrics.partial.csv`；CI 每方法更新 partial，并在计算前写 `metrics current=...` 进度。partial 不作为完整 resume、不能当成最终 metrics。原严格完整 dataset checkpoint 继续保留。
+- 结果版本保护同时检查 `run_metadata.json`，即使旧目录缺少 CSV 也不允许新版覆盖；无法读取版本时使用新目录。v12 原结果不混合、不续接到 v13。
+- `analyze_results.py --fit-only` 明确只核查正常拟合/来源/共享协议/几何/候选/lambda/收敛作用域；输出 `anomaly_performance_assessed=false`，不伪造缺失的 AUROC/AUPRC/AUPRO。完整性能评价仍需全六与所有对照，正常 Gram 或正常近邻诊断不能代替检测效果。
+- ASLS、原/新 U-VaRFS 求解器与选择规则、Frozen backbone、raw Main/L2 消融、152 方法、五 seeds、正常 fit/variability/memory/维度预算、beta/lambda、cosine 1-NN、Top-1% 与 pixel 定义全部不变。本轮无新的训练方法授权需求，没有根据局部 test 结果改训练。
+
+129 项本地数学/CPU/I/O 回归通过，4 项 CUDA 检查因缺少 runtime 跳过。独立 sklearn bootstrap oracle 覆盖 ties、单类别 draw、不同 batch sizes；模拟统计中断核验预测/点估计保留与进度，检查缺 CSV 的历史版本保护、正常拟合预算与共享分支审计。训练源码逐文件对照不变；真实 BMAD、权重和 CUDA 不在本机，先服务器 Liver 验证收尾，再固定设计全六。

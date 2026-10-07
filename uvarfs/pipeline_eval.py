@@ -84,6 +84,14 @@ def _heartbeat(prefix,batch_i,total,t0,cfg,extra=None,progress_path=None):
         },indent=2),encoding='utf-8')
 
 
+def _atomic_csv(frame,path):
+    """Publish a complete diagnostic file even if final statistics fail later."""
+    path=Path(path)
+    temporary=path.with_name(path.name+'.tmp')
+    frame.to_csv(temporary,index=False)
+    temporary.replace(path)
+
+
 def build_memories(extractor,train_samples,specs,cfg,progress_path=None):
     if not train_samples or any(s.label!=0 or s.split!='train' for s in train_samples):
         raise ValueError('normal memory requires the official normal-reference training split')
@@ -242,6 +250,17 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
         if bi==1 or bi%heartbeat_n==0 or bi==total:
             _heartbeat('test',bi,total,t0,cfg,extra=f'backend={backend}',progress_path=progress_path)
 
+    # The expensive DINO/NN pass is finished. Persist every prediction before
+    # CI computation, so a statistics interruption does not hide scored images.
+    if output is not None:
+        predictions=pd.DataFrame({'image_path':[str(s.image) for s in test_samples],
+                                  'label':labels,'mask_path':[str(s.mask) if s.mask else '' for s in test_samples],
+                                  **scores})
+        _atomic_csv(predictions,output/'image_predictions.csv')
+        print(f'[test] predictions saved: {output/"image_predictions.csv"}; final statistics pending',flush=True)
+    stats_start=time.time()
+    _heartbeat('metrics',0,len(specs),stats_start,cfg,
+               extra='point estimates and bootstrap pending',progress_path=progress_path)
     rows=[]
     for name in specs:
         row={
@@ -250,24 +269,31 @@ def evaluate(extractor,test_samples,specs,memories,cfg,progress_path=None):
             'image_auprc':safe_ap(labels,scores[name]),
             'matching_and_aggregation_seconds':match_seconds[name],
             'memory_vector_fp16_mib':memories[name].size*2/1024**2,
-            'image_auroc_ci95':bootstrap_auc(
-                labels,scores[name],
-                int(eval_cfg['bootstrap_samples']),int(cfg['seed'])
-            )
         }
         if has_local:
             row.update(pixels[name].finalize())
         rows.append(row)
     if output is not None:
-        predictions=pd.DataFrame({'image_path':[str(s.image) for s in test_samples],
-                                  'label':labels,'mask_path':[str(s.mask) if s.mask else '' for s in test_samples],
-                                  **scores})
-        predictions.to_csv(output/'image_predictions.csv',index=False)
+        _atomic_csv(pd.DataFrame(rows),output/'evaluation_metrics.partial.csv')
+    print(f'[metrics] point estimates ready; bootstrap draws={eval_cfg["bootstrap_samples"]} methods={len(specs)}',flush=True)
+    for method_i,row in enumerate(rows,start=1):
+        name=row['method']
+        # Identify the current method BEFORE entering a potentially long call.
+        _heartbeat('metrics',method_i-1,len(specs),stats_start,cfg,
+                   extra=f'current={name} bootstrap',progress_path=progress_path)
+        row['image_auroc_ci95']=bootstrap_auc(
+            labels,scores[name],int(eval_cfg['bootstrap_samples']),int(cfg['seed']),
+            batch_size=int(eval_cfg.get('bootstrap_batch_size',32)))
+        if output is not None:
+            _atomic_csv(pd.DataFrame(rows),output/'evaluation_metrics.partial.csv')
+    _heartbeat('metrics',len(specs),len(specs),stats_start,cfg,
+               extra='all final statistics ready',progress_path=progress_path)
     if progress_path is not None:
         Path(progress_path).write_text(json.dumps({
             'stage':'complete','samples':len(test_samples),'methods':len(specs),
             'backend':backend,'updated_unix':time.time(),
             'mask_coverage':coverage,
+            'statistics_seconds':time.time()-stats_start,
         },indent=2),encoding='utf-8')
     return rows
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from .representation import normalization_modes, normalization_prefix
 from .objectives import experiment_branches
 
-EXPERIMENT_VERSION = 'gpu-eval-v12-cosine-simplex'
+EXPERIMENT_VERSION = 'gpu-eval-v13-evaluation-finalization'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
@@ -42,6 +42,15 @@ def code_fingerprint(root: Path):
 
 def validate_results_version(root: Path):
     """Refuse cross-version overwrites, even with force/resume disabled."""
+    # A returned run may have finished fitting without any final metric CSV.
+    # Its recorded version still protects that historical directory.
+    for path in root.glob('*/run_metadata.json'):
+        try:
+            metadata=json.loads(path.read_text(encoding='utf-8'))
+        except (OSError,ValueError) as error:
+            raise ValueError(f'Cannot establish results version at {path}; use a fresh version directory.') from error
+        if not isinstance(metadata,dict) or metadata.get('experiment_version')!=EXPERIMENT_VERSION:
+            raise ValueError(f'Results version differs at {path}; set results_dir to a fresh version directory. Historical results must remain intact.')
     import pandas as pd
     paths=[root/'all_metrics.csv',root/'all_metrics.partial.csv']
     paths.extend(root/name/'metrics.csv' for name in BMAD_DATASETS)

@@ -19,13 +19,39 @@ def safe_auc(y,s):
 def safe_ap(y,s):
     y=np.asarray(y); s=np.asarray(s)
     return float(average_precision_score(y,s)) if len(np.unique(y))>1 else float("nan")
-def bootstrap_auc(y,s,n=1000,seed=42):
-    y=np.asarray(y); s=np.asarray(s); rng=np.random.default_rng(seed); vals=[]
-    for _ in range(n):
-        idx=rng.integers(0,len(y),len(y))
-        if len(np.unique(y[idx]))<2: continue
-        vals.append(roc_auc_score(y[idx],s[idx]))
-    return [float(np.percentile(vals,2.5)),float(np.percentile(vals,97.5))] if vals else [float("nan"),float("nan")]
+def bootstrap_auc(y,s,n=1000,seed=42,batch_size=32):
+    """Original image bootstrap, with one score sort and exact tie handling.
+
+    Keep the same integers-based, non-stratified resampling stream and skip
+    single-class draws. Multiplicities replace sorting every resampled score
+    array; batching changes only temporary storage, not the draws or CI.
+    """
+    if n<=0:
+        return [float('nan'),float('nan')]
+    y=np.asarray(y); s=np.asarray(s)
+    if y.ndim!=1 or s.shape!=y.shape or not len(y) or not np.isfinite(s).all() or batch_size<1:
+        raise ValueError('bootstrap requires aligned finite scores and a positive batch size')
+    classes=np.unique(y)
+    if len(classes)<2:
+        return [float('nan'),float('nan')]
+    if len(classes)!=2:
+        raise ValueError('image AUROC bootstrap requires binary labels')
+    order=np.argsort(s,kind='stable')
+    starts=np.r_[0,np.flatnonzero(s[order][1:]!=s[order][:-1])+1]
+    positive=y[order]==classes[-1]
+    rng=np.random.default_rng(seed); vals=[]; count=len(y)
+    for start in range(0,n,batch_size):
+        size=min(batch_size,n-start)
+        idx=rng.integers(0,count,(size,count))
+        weights=np.bincount((idx+np.arange(size)[:,None]*count).ravel(),
+                            minlength=size*count).reshape(size,count)[:,order]
+        pos=np.add.reduceat(weights*positive,starts,axis=1)
+        neg=np.add.reduceat(weights*~positive,starts,axis=1)
+        P=pos.sum(1); N=neg.sum(1); valid=(P>0)&(N>0)
+        below=np.cumsum(neg,axis=1)-neg
+        numerator=(pos*(below+.5*neg)).sum(1)
+        vals.extend((numerator[valid]/(P[valid]*N[valid])).tolist())
+    return [float(np.percentile(vals,2.5)),float(np.percentile(vals,97.5))] if vals else [float('nan'),float('nan')]
 
 class PixelAccumulator:
     """Streaming approximate pixel AUROC/AUPRC/AUPRO with low CPU overhead."""
