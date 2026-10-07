@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib
+import json
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
@@ -8,6 +9,8 @@ from .data import BMADDataset
 from .perturb import perturb_batch, PERTURBATIONS
 from .asls import fit_asls, reselect_asls
 from .u_varfs import fit_uvarfs
+from .cosine_uvarfs import fit_cosine_uvarfs
+from .objectives import COSINE, QUADRATIC, objective_modes, experiment_branches
 from .transforms import fit_pca
 from .utils import save_json
 from .variability import NormalVariability
@@ -117,6 +120,11 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
                'variability_feature_space':mode,
                'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},dataset_out/'fit_manifest.json')
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
+    cache_key=json.dumps([cfg['asls'],cfg['methods']],sort_keys=True)
+    if inputs.get('asls_cache_key')==cache_key:
+        for name,result in inputs['asls_artifacts'].items():
+            save_json(result,dataset_out/name)
+        return patches,var_vectors,inputs['asls_artifacts']['asls.json']
     representation=cfg['asls'].get('geometry_representation','patch')
     inputs={'pooled':pooled,'patch':patches}
     print(f"[fit] ASLS start: geometry={representation} layers={len(pooled)} samples={next(iter(inputs[representation].values())).shape[0]}", flush=True)
@@ -127,8 +135,8 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
         if other!=representation and any(method.startswith(f'asls_{other}_') for method in cfg['methods']):
             print(f'[fit] ASLS {other} geometry ablation',flush=True)
             comparisons[other]=fit_asls(inputs[other],layer_var,{**cfg['asls'],'geometry_representation':other})
-    for mode,result in comparisons.items():
-        save_json(result,dataset_out/f'asls_{mode}.json')
+    for geometry_mode,result in comparisons.items():
+        save_json(result,dataset_out/f'asls_{geometry_mode}.json')
     # Keep only selection metadata here; optimizer traces live in separate files.
     asls['geometry_comparisons']={mode:{k:result[k] for k in ['selected_layers','geometry_error','feasible','geometry_representation','discrete_selection']}
                                   for mode,result in comparisons.items()}
@@ -143,10 +151,13 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
                 ['selected_layers','geometry_error','feasible','geometry_representation','discrete_selection']}
     print(f"[fit] ASLS done: selected_layers={asls['selected_layers']} geometry_error={asls['geometry_error']:.4f}", flush=True)
     save_json(asls, dataset_out / "asls.json")
+    collected[mode]['asls_cache_key']=cache_key
+    collected[mode]['asls_artifacts']={p.name:json.loads(p.read_text(encoding='utf-8'))
+        for p in dataset_out.glob('asls*.json')}
     return patches, var_vectors, asls
 
 
-def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None):
+def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None, gram_cache=None):
     patches, variabilities, asls = fit_representation(extractor, train_samples, cfg, dataset_out,collected)
     input_mode,_=normalization_modes(cfg)
     selected = asls["selected_layers"]
@@ -156,6 +167,8 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None)
     seed = int(cfg["seed"])
     enabled = set(cfg["methods"])
     uv_cache={}
+    gram_cache={} if gram_cache is None else gram_cache
+    objective,_=objective_modes(cfg)
 
     def serializable(value):
         if isinstance(value,np.ndarray):
@@ -170,22 +183,39 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None)
         audit=result.get('budget_geometry_audit')
         mass=audit['coordinate_reference_alignment'] if audit is not None else []
         by_layer={str(l):sum(mass[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim]) for i,l in enumerate(layers)}
+        relative=result.get('budgeted_weights',[]) if result.get('objective_definition')==COSINE else []
+        relative_by_layer={str(l):float(sum(relative[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim])) for i,l in enumerate(layers)} if len(relative) else None
         save_json({'layers':layers,'layer_normalization':input_mode,
-                   'normal_reference_alignment_by_layer':by_layer,
+                   'normal_reference_alignment_by_layer':by_layer if mass else None,
+                   'relative_weight_by_layer':relative_by_layer,
                    **serializable(result)},dataset_out/f'uvarfs_{name}.json')
+
+    def fit_gram(name,layers):
+        key=tuple(layers)
+        if key not in gram_cache:
+            x = torch.cat([patches[l] for l in layers], dim=-1)
+            v = torch.cat([variabilities[l] for l in layers], dim=1)
+            gram_cache[key]=fit_uvarfs(x,v,cfg['uvarfs'],label=f'uvarfs:{name}:gram-control')
+            gram_cache[key]['objective_definition']=QUADRATIC
+            gram_cache[key]['geometry_metric']='unrenormalized_weighted_gram_relative_frobenius'
+        return gram_cache[key]
 
     def fit_uv(name, layers):
         key=tuple(layers)
         if key not in uv_cache:
-            x = torch.cat([patches[l] for l in layers], dim=-1)
-            v = torch.cat([variabilities[l] for l in layers], dim=1)
-            print(f"[fit] U-VaRFS {name}: layers={layers} shape={tuple(x.shape)}", flush=True)
-            uv_cache[key]=fit_uvarfs(x,v,cfg['uvarfs'],label=f'uvarfs:{name}')
+            old=fit_gram(name,layers)
+            if objective==COSINE:
+                x=torch.cat([patches[l] for l in layers],dim=-1)
+                v=torch.cat([variabilities[l] for l in layers],dim=1)
+                uv_cache[key]=fit_cosine_uvarfs(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:cosine')
+            else:
+                uv_cache[key]=old
         r=uv_cache[key]
         save_uv(name,layers,r)
         return r
 
     main_uv = fit_uv("main", selected)
+    main_gram=fit_gram('main',selected)
     fixed_uv = fit_uv("fixed4", fixed) if 'fixed4_uvarfs' in enabled else None
     all_uv = fit_uv("all", all_layers) if 'all_uvarfs' in enabled else None
     xsel = torch.cat([patches[l] for l in selected], dim=-1)
@@ -221,23 +251,23 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None)
                     spec['obj']=main_uv if layers==selected else fit_uv(f'asls_{rule}',layers)
                 specs[name]=spec
     if 'asls_top_weights_uvarfs' in enabled:
-        obj=main_uv.get('legacy_top_weights',main_uv)
+        obj=main_gram.get('legacy_top_weights',main_gram)
         save_uv('asls_top_weights',selected,obj)
         specs['asls_top_weights_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
             'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
     if 'asls_prune_refit_uvarfs' in enabled:
-        obj=main_uv.get('prune_refit',main_uv)
+        obj=main_gram.get('prune_refit',main_gram)
         save_uv('asls_prune_refit',selected,obj)
         specs['asls_prune_refit_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
             'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
     if 'asls_exchange_refit_uvarfs' in enabled:
-        obj=main_uv.get('exchange_refit',main_uv)
+        obj=main_gram.get('exchange_refit',main_gram)
         save_uv('asls_exchange_refit',selected,obj)
         specs['asls_exchange_refit_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
             'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
     if 'legacy_main' in enabled:
         prefix=reselect_asls(asls,cfg['asls'],'gate_prefix')
-        prefix_uv=fit_uv('asls_gate_prefix',prefix['selected_layers'])
+        prefix_uv=fit_gram('asls_gate_prefix',prefix['selected_layers'])
         obj=prefix_uv.get('legacy_top_weights',prefix_uv)
         save_uv('legacy_main',prefix['selected_layers'],obj)
         specs['legacy_main']={'layers':prefix['selected_layers'],'kind':'uvarfs','obj':obj,'asls_geometry':prefix}
@@ -271,6 +301,9 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None)
             base='randomk_uvarfs'
         if base in enabled:
             v['layer_normalization']=input_mode
+            v['objective_branch']=objective
+            if v['kind']=='uvarfs':
+                v['uvarfs_objective']=v['obj'].get('objective_definition',QUADRATIC)
             if k in {'main','asls_raw','asls_pca'} or base=='asls_random':
                 v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
@@ -284,16 +317,21 @@ def fit_all_method_specs(extractor, train_samples, cfg, dataset_out):
     """Paired input ablation using the same images, patches and DINO forwards."""
     primary,modes=normalization_modes(cfg)
     collected=collect_normal_inputs(extractor,train_samples,cfg)
-    specs={}
-    for mode in modes:
-        settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None}}
-        prefix='' if mode==primary else normalization_prefix(mode)
-        output=dataset_out if mode==primary else dataset_out/prefix.rstrip('_')
-        fitted=fit_method_specs(extractor,train_samples,settings,output,collected)
+    specs={}; caches={mode:{} for mode in modes}
+    for branch in experiment_branches(cfg):
+        mode=branch['layer_normalization']; prefix=branch['prefix']
+        settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None},
+                  'uvarfs':{**cfg['uvarfs'],'objective':branch['objective'],'ablation_objective':None}}
+        output=dataset_out/branch['folder']
+        fitted=fit_method_specs(extractor,train_samples,settings,output,collected,caches[mode])
         specs.update({prefix+name:spec for name,spec in fitted.items()})
     save_json({'primary_layer_normalization':primary,
                'ablation_layer_normalization':modes[1] if len(modes)>1 else None,
                'shared_fit_images_and_patches':True,'shared_backbone_forwards':True,
+               'shared_asls_by_input':True,
+               'objective_branches':experiment_branches(cfg),
+               'objective_branch_by_method':{name:spec['objective_branch'] for name,spec in specs.items()},
+               'uvarfs_objective_by_method':{name:spec.get('uvarfs_objective') for name,spec in specs.items()},
                'normalization_by_method':{name:spec['layer_normalization'] for name,spec in specs.items()}},
               dataset_out/'representation_manifest.json')
     return specs

@@ -166,7 +166,7 @@ def review(results, output):
                'reads_test_metrics_for_selection': False,
                'source_sha256': before, 'returned_normal_diagnostics': rows,
                'mathematical_examples': examples}
-    lines = ['# U-VaRFS 目标升级评审（尚未替换主目标）', '',
+    lines = ['# U-VaRFS 目标升级的正常诊断评审（只读）', '',
              '当前仍是 Frozen DINOv3 + ASLS + U-VaRFS 的无异常标签医学异常检测研究。', '',
              '本脚本仅汇总已回传的正常训练诊断并检查数学例子，不读取 AUROC、异常标签或 masks 来选方法/参数，不拟合或输出新特征选择器。', '',
              '## 原目标与实际 detector 的正常几何', '',
@@ -184,8 +184,8 @@ def review(results, output):
     for item in examples['naive_weight_collapse']:
         lines.append(f"| {item['common_weight_scale']:g} | {item['naive_cosine_plus_original_penalties']:.9g} | {item['simplex_cardinality_proposal']:.9g} |")
     lines += ['', '## 拟议改法', '',
-              '在 sum(p)=1 的非负相对权重上保留实际 cosine geometry；按 full-input uniform weights 标定 variability；用 λ·非零维数表示稀疏性，沿用统一维度上限与 normal-only 选解。详细公式、候选求解、对照和验收见仓库 UV_COSINE_OBJECTIVE_PROPOSAL.md。', '',
-              '这是明确的 U-VaRFS 数学定义升级，按 AGENTS 第 5.2/19 节待批准。当前 main、L2 消融、v11 求解、beta/lambda/数据/预算/ASLS/detector 均未替换。数学例子的正向几何结果不能宣称真实 AUROC/AUPRO 改善。', '',
+              '在 sum(p)=1 的非负相对权重上保留实际 cosine geometry；按 full-input uniform weights 标定 variability；用 λ·非零维数表示稀疏性。提案历史记录见 UV_COSINE_OBJECTIVE_PROPOSAL.md，已批准的 v12 实现见 COSINE_UVARFS_UPGRADE.md。', '',
+              '本脚本仅评审原 Gram 回传的正常诊断，不拟合或改变 selector；新主目标已按用户批准接入 v12，并保留原目标控制。数学例子的正向几何结果不能宣称真实 AUROC/AUPRO 改善，L2 主输入切换仍不在目标升级批准范围内。', '',
               f'回传源文件共 {len(before)} 个，读取前后 SHA256 一致。新报告仅留本地；不改写历史实验。', '']
     output.mkdir(parents=True, exist_ok=True)
     (output / 'review.json').write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')

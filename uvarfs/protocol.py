@@ -5,8 +5,9 @@ import json
 import math
 from pathlib import Path
 from .representation import normalization_modes, normalization_prefix
+from .objectives import experiment_branches
 
-EXPERIMENT_VERSION = 'gpu-eval-v11-forward-budget-audit'
+EXPERIMENT_VERSION = 'gpu-eval-v12-cosine-simplex'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
@@ -20,9 +21,8 @@ def expected_method_names(cfg):
             names.append(method)
     if len(names) != len(set(names)):
         raise ValueError('duplicate methods or random baseline seeds')
-    _,modes=normalization_modes(cfg)
     base=names.copy()
-    names.extend(normalization_prefix(mode)+name for mode in modes[1:] for name in base)
+    names=[branch['prefix']+name for branch in experiment_branches(cfg) for name in base]
     if len(names)!=len(set(names)):
         raise ValueError('normalization ablation method names collide')
     return sorted(names)

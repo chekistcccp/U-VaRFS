@@ -1,4 +1,6 @@
-# U-VaRFS 的 cosine 几何目标升级提案（待批准）
+# U-VaRFS 的 cosine 几何目标升级提案（批准前历史记录）
+
+> 用户已明确批准设计改进，当前实现见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)。下文保留提案与评审阶段的历史状态，不再作为待批准阻塞；目标已接入 v12，L2 主输入切换不在本批准范围内。
 
 项目仍为 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS 的无异常标签医学异常检测研究**，最终保留 BMAD 六数据集。此文件是一份可审核的方法升级提案，不是已经启用的新主方法。
 

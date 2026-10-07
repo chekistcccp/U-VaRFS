@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from uvarfs.representation import normalization_modes, normalization_prefix
+from uvarfs.objectives import COSINE, QUADRATIC, experiment_branches
 
 DATASETS = ['brain','liver','resc','oct2017','xray','camelyon16']
 PIXEL_DATASETS = {'brain','liver','resc'}
@@ -96,6 +97,8 @@ def markdown_table(frame, columns):
 
 def audit_sparse_path(result, cfg):
     """Verify normal-only budget guards, independently of anomaly metrics."""
+    if result.get('objective_definition')==COSINE:
+        return audit_cosine_path(result,cfg)
     path=result['lambda_path']
     dimension=len(result['weights'])
     minimum=min(int(cfg['min_features']),dimension)
@@ -151,6 +154,94 @@ def audit_sparse_path(result, cfg):
             'selection_and_guards_verified':True}
 
 
+def audit_cosine_path(result,cfg):
+    """Check the finite-pool/new-metric selection; no old convex certificate."""
+    if (result.get('geometry_metric')!='actual_cosine_gram_relative_frobenius' or
+        result.get('objective_certificate_scope')!='fixed_support_first_order_only_nonconvex' or
+        result.get('global_optimality_claimed') is not False or
+        result.get('lambda_optimization_scope')!='finite_generated_candidate_pool' or
+        result.get('box_optimality_gap') is not None or result.get('budget_geometry_audit') is not None):
+        raise ValueError('cosine objective has a wrong metric or certificate scope')
+    dimension=len(result['weights']); minimum=min(cfg['min_features'],dimension); maximum=min(cfg['max_features'],dimension)
+    floor=cfg.get('cosine_weight_floor_mass',1e-4); tolerance=cfg['geometry_tolerance']
+    pool=result['candidate_pool']; path=result['lambda_path']
+    if not pool or [p['lambda'] for p in path]!=[float(x) for x in cfg['lambda_grid']]:
+        raise ValueError('cosine candidate pool or lambda grid differs')
+    manifest=result['solver_manifest']
+    sizes=sorted(set(range(minimum,maximum+1,cfg.get('cosine_support_step',32)))|{maximum,min(maximum,max(minimum,result.get('original_gram_selected_dimension',maximum)))},reverse=True)
+    # The exact seed dimension is recorded separately; every generated size must
+    # be preset or the selected original-control size, never a test-tuned budget.
+    if (manifest['weight_floor_mass']!=floor or manifest['support_sizes']!=sizes or
+        manifest['initializations']!=['original_gram_selected','original_gram','normal_energy'] or
+        manifest['refit_max_iter']!=cfg.get('cosine_refit_max_iter',cfg['max_iter']) or
+        manifest['geometry_chunk']!=cfg.get('cosine_geometry_chunk',512) or
+        manifest['line_search_steps']!=cfg.get('cosine_line_search_steps',20) or
+        manifest['initial_step']!=cfg.get('cosine_initial_step',.05) or manifest['tolerance']!=cfg['tol'] or
+        manifest['exchange_max_steps']!=cfg.get('cosine_exchange_max_steps',cfg.get('support_exchange_max_steps',8)) or
+        manifest['exchange_candidates']!=cfg.get('cosine_exchange_candidates',8) or
+        manifest['exchange_min_improvement']!=cfg.get('support_exchange_min_improvement',1e-8) or
+        manifest['zero_row_rule']!='candidate invalid; never normalized with epsilon'):
+        raise ValueError('cosine solver manifest differs from preset constraints')
+    for index,candidate in enumerate(pool):
+        weights=np.asarray(candidate['weights'],dtype=float); active=np.asarray(candidate['active'],dtype=int)
+        if (weights.shape!=(dimension,) or not np.isfinite(weights).all() or (weights<0).any() or
+            candidate['candidate_id']!=index or not minimum<=len(active)<=maximum or
+            len(set(active.tolist()))!=len(active) or (active<0).any() or (active>=dimension).any()):
+            raise ValueError('cosine candidate support or weights are invalid')
+        nonzero=np.flatnonzero(weights>0)
+        if not np.array_equal(nonzero,active) or not np.isclose(weights.sum(),1,atol=1e-6) or (weights[active]<floor/len(active)-1e-9).any():
+            raise ValueError('cosine candidate violates simplex/positive-support constraints')
+        if (candidate['nonzero_features']!=len(active) or candidate['retained_features']!=len(active) or
+            candidate['zero_norm_rows']!=0 or candidate['retained_features'] not in sizes or
+            candidate['source'] not in manifest['initializations']):
+            raise ValueError('cosine candidate dimension/source disagrees')
+        numeric=['geometry_error','representation_term','variability_term','relative_variability',
+                 'base_objective','fixed_support_first_order_residual','simplex_residual']
+        if not np.isfinite([candidate[k] for k in numeric]).all() or any(candidate[k]<0 for k in numeric):
+            raise ValueError('nonfinite or negative cosine diagnostics')
+        if (not np.isclose(candidate['representation_term'],.5*candidate['geometry_error']**2,atol=1e-9) or
+            not np.isclose(candidate['variability_term'],cfg['beta']*candidate['relative_variability'],atol=1e-9) or
+            not np.isclose(candidate['base_objective'],candidate['representation_term']+candidate['variability_term'],atol=1e-9) or
+            not np.isclose(candidate['effective_weight_dimension'],1/np.square(weights).sum(),atol=1e-5) or
+            not np.isclose(candidate['simplex_residual'],abs(weights.sum()-1),atol=1e-10) or
+            not np.isclose(candidate['minimum_relative_weight'],weights[active].min(),atol=1e-9) or
+            candidate['fixed_support_converged']!=(candidate['fixed_support_first_order_residual']<=cfg['tol'])):
+            raise ValueError('cosine candidate objective/residual fields disagree')
+        for history in [candidate['refit_descent_history'],candidate['exchange_history']]:
+            if any(not np.isfinite([p['before'],p['after']]).all() or p['after']>=p['before'] for p in history):
+                raise ValueError('cosine accepted search step is not descent')
+    for point in path:
+        lam=point['lambda']
+        best=min(pool,key=lambda c:(c['base_objective']+lam*c['retained_features'],c['retained_features'],c['geometry_error'],c['candidate_id']))
+        if point['candidate_id']!=best['candidate_id']:
+            raise ValueError('cosine lambda point is not the best generated full-objective candidate')
+        for key in ['retained_features','nonzero_features','geometry_error','base_objective','representation_term','variability_term','effective_weight_dimension','fixed_support_first_order_residual']:
+            if not np.isclose(point[key],best[key],atol=1e-10):
+                raise ValueError('cosine lambda fields disagree with selected candidate')
+        if (not np.isclose(point['sparsity_term'],lam*best['retained_features'],atol=1e-10) or
+            not np.isclose(point['objective'],best['base_objective']+point['sparsity_term'],atol=1e-10) or
+            point['feasible']!=(point['geometry_error']<=tolerance and point['nonzero_features']>=minimum)):
+            raise ValueError('cosine lambda objective/feasibility is inconsistent')
+    feasible=[p for p in path if p['feasible']]
+    selected=min(feasible,key=lambda p:(p['retained_features'],p['geometry_error'])) if feasible else min(path,key=lambda p:p['geometry_error'])
+    if result['lambda']!=selected['lambda'] or result['candidate_id']!=selected['candidate_id'] or result['feasible']!=selected['feasible']:
+        raise ValueError('cosine selected lambda violates its normal-only rule')
+    chosen=pool[selected['candidate_id']]
+    if (result['selection_reason']!=('sparsest_feasible' if selected['feasible'] else 'minimum_geometry_error_fallback') or
+        result['solver_converged']!=selected['fixed_support_converged'] or
+        not np.isclose(result['geometry_error'],selected['geometry_error'],atol=1e-10) or
+        not np.isclose(result['objective'],selected['objective'],atol=1e-10) or
+        result['lambda_at_grid_boundary']!=(result['lambda'] in (min(cfg['lambda_grid']),max(cfg['lambda_grid'])))):
+        raise ValueError('cosine selected result fields disagree with its path')
+    for key in ['weights','budgeted_weights']:
+        np.testing.assert_array_equal(result[key],chosen['weights'])
+    np.testing.assert_array_equal(result['active'],chosen['active'])
+    np.testing.assert_allclose(np.square(result['scales']),np.asarray(chosen['weights'])[chosen['active']],rtol=1e-6,atol=1e-9)
+    return {'points':len(path),'candidate_pool_size':len(pool),'selected_nonzero_features':selected['nonzero_features'],
+            'objective_definition':COSINE,'certificate_scope':result['objective_certificate_scope'],
+            'selection_and_guards_verified':True,'global_optimality_claimed':False}
+
+
 def audit_representation_protocol(folder, cfg, frame, primary_fit):
     """Paired input branches must share data and perturbations, not feature values."""
     if 'representation' not in cfg:
@@ -163,10 +254,16 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
         manifest['ablation_layer_normalization']!=(modes[1] if len(modes)>1 else None) or
         manifest['normalization_by_method']!=observed):
         raise ValueError('representation manifest and per-method input conventions disagree')
+    if 'objective' in cfg.get('uvarfs',{}):
+        if manifest.get('objective_branches')!=experiment_branches(cfg):
+            raise ValueError('objective branch manifest differs')
+        if 'objective_branch' in frame and manifest.get('objective_branch_by_method')!=dict(zip(frame.method,frame.objective_branch)):
+            raise ValueError('objective per-method manifest differs from CSV')
     records=[]
-    for mode in modes:
-        prefix='' if mode==primary else normalization_prefix(mode)
-        output=folder if not prefix else folder/prefix.rstrip('_')
+    asls_by_input={}; fitted_by_input={}
+    for branch in experiment_branches(cfg):
+        mode=branch['layer_normalization']; prefix=branch['prefix']
+        output=folder/branch['folder']
         fit=json.loads((output/'fit_manifest.json').read_text())
         if fit['layer_normalization']!=mode or fit['variability_feature_space']!=mode:
             raise ValueError('fit and variability use different feature input conventions')
@@ -179,14 +276,34 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
             raise ValueError('main input convention does not match fit')
         a=json.loads((output/'asls.json').read_text())
         u=json.loads((output/'uvarfs_main.json').read_text())
+        if u.get('objective_definition',QUADRATIC)!=branch['objective']:
+            raise ValueError('main objective does not match its declared branch')
         normal=json.loads((output/'normal_geometry_audit.json').read_text())
         count=sum(batch['batch_images']*len(batch['patch_indices']) for batch in fit['sampled_patches'])
         if a['layer_normalization']!=mode or normal['layer_feature_normalization']!=mode or normal['selection_candidate'] is not False or normal['normal_geometry_rows']!=count:
             raise ValueError('normal geometry diagnostics use the wrong input convention or rows')
+        if mode in asls_by_input and a!=asls_by_input[mode]:
+            raise ValueError('objective ablation changed ASLS')
+        asls_by_input[mode]=a
+        fitted_by_input.setdefault(mode,{})[branch['objective']]=u
+        own_rows=frame.set_index('method')
+        if 'feature_dim' in own_rows and len(u['active'])!=own_rows.loc[own].feature_dim:
+            raise ValueError('main CSV dimension disagrees with fitted support')
+        for name in ['asls_pca']+[f'asls_random_seed{s}' for s in cfg.get('random_baseline_seeds',[cfg['seed']])]:
+            if 'feature_dim' in own_rows and prefix+name in own_rows.index and own_rows.loc[prefix+name].feature_dim!=len(u['active']):
+                raise ValueError('PCA/Random feature dimension differs from its own objective branch')
+        if branch['objective']==COSINE and not np.isclose(u['geometry_error'],normal['methods']['main']['vs_selected_input_cosine']['cosine_gram_relative_error'],atol=2e-6,rtol=1e-5):
+            raise ValueError('cosine selection geometry disagrees with actual detector representation')
         records.append({'method':own,'layer_normalization':mode,'layers':a['selected_layers'],
+                        'objective_definition':branch['objective'],
                         'sparse_path_audit':audit_sparse_path(u,cfg['uvarfs']),
                         'budget_geometry_audit':u.get('budget_geometry_audit'),
                         'normal_cosine_geometry':normal})
+    for objectives in fitted_by_input.values():
+        if COSINE in objectives and QUADRATIC in objectives:
+            new,old=objectives[COSINE],objectives[QUADRATIC]
+            if new['original_gram_selected_dimension']!=len(old['active']) or new['original_gram_selected_active']!=sorted(old['active']):
+                raise ValueError('cosine warm start disagrees with original same-input control')
     return records
 
 
@@ -262,7 +379,7 @@ def audit(results: Path, output: Path, draws: int):
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
         for method in ['all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
                        'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','legacy_main',
-                       'layer_l2_main','raw_input_main']:
+                       'layer_l2_main','raw_input_main','gram_main']:
             if method in source.method.values:
                 comparisons[method]=[method]
         intervals=paired_bootstrap(predictions,comparisons,draws=draws)
@@ -274,14 +391,17 @@ def audit(results: Path, output: Path, draws: int):
                                 'bootstrap_draws':draws,'bootstrap_seed':42,'bootstrap_unit':'image',
                                 'stratified_by_label':True})
         # Compare each other input branch against its OWN baselines.
-        _,modes=normalization_modes(cfg)
-        for mode in modes[1:]:
-            prefix=normalization_prefix(mode); target=prefix+'main'
+        branches=experiment_branches(cfg)
+        for branch in branches[1:]:
+            prefix=branch['prefix']; target=prefix+'main'
             groups={prefix+family:[prefix+family] for family in [
                 'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','legacy_main',
                 'asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs'] if prefix+family in source.method.values}
             groups.update({prefix+family:[f'{prefix}{family}_seed{s}' for s in seeds]
                            for family in ['randomk_raw','randomk_uvarfs','asls_random']})
+            controls=[other for other in branches if other['layer_normalization']==branch['layer_normalization'] and other['objective']==QUADRATIC]
+            if branch['objective']==COSINE and controls:
+                control=controls[0]['prefix']+'main'; groups[control]=[control]
             intervals=paired_bootstrap(predictions,groups,draws=draws,target=target)
             for family,methods in groups.items():
                 delta=float(source.set_index('method').loc[target].image_auroc-source.set_index('method').loc[methods].image_auroc.mean())
@@ -289,8 +409,8 @@ def audit(results: Path, output: Path, draws: int):
                                     'ci95_lower':intervals[family][0],'ci95_upper':intervals[family][1],
                                     'bootstrap_draws':draws,'bootstrap_seed':42,'bootstrap_unit':'image',
                                     'stratified_by_label':True})
-        for mode in modes:
-            prefix='' if mode==modes[0] else normalization_prefix(mode)
+        for branch in branches:
+            prefix=branch['prefix']
             target=prefix+'asls_raw'
             groups={prefix+family:[prefix+family] for family in ['fixed4_raw','all_raw']}
             groups[prefix+'randomk_raw']=[f'{prefix}randomk_raw_seed{s}' for s in seeds]
@@ -330,6 +450,10 @@ def audit(results: Path, output: Path, draws: int):
                             'discrete_selection':a.get('discrete_selection','gate_prefix'),
                             'sparsity_strategy':uv.get('sparsity_strategy','top_weights'),
                             'budgeted_objective':uv.get('budgeted_objective'),
+                            'objective_definition':uv.get('objective_definition',QUADRATIC),
+                            'geometry_metric':uv.get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius'),
+                            'fixed_support_first_order_residual':uv.get('fixed_support_first_order_residual'),
+                            'effective_weight_dimension':uv.get('effective_weight_dimension'),
                             'budgeted_box_optimality_gap':uv.get('budgeted_box_optimality_gap'),
                             'fixed_support_box_gap':uv.get('fixed_support_box_gap'),
                             'lambda':uv['lambda'],'iterations':uv['solver_iterations'],
@@ -384,8 +508,75 @@ def audit(results: Path, output: Path, draws: int):
     except (OSError,subprocess.CalledProcessError):
         data['git_blob_code_verified']=False
     (output/'analysis_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    report=write_report if versions[0]=='gpu-eval-v4-protocol-fixes' else write_current_report
+    report=write_report if versions[0]=='gpu-eval-v4-protocol-fixes' else write_cosine_report if diagnostics[0]['objective_definition']==COSINE else write_current_report
     report(output,df,summary,pd.DataFrame(paired_rows),pd.DataFrame(prevalence_rows),data)
+
+
+def write_cosine_report(output,df,summary,paired,prevalence,data):
+    """Report the approved new target without borrowing old convex claims."""
+    main=df[df.method=='main'].set_index('dataset').loc[DATASETS]
+    macro=summary.groupby('method_family').image_auroc_mean.mean().sort_values(ascending=False)
+    table=main[['selected_layers','feature_dim','image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']].reset_index()
+    for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
+        table[column]=table[column].map(lambda value:f'{value*100:.2f}' if pd.notna(value) else 'n.a.')
+    comparisons=pd.DataFrame({'dataset':DATASETS})
+    for family in ['main','gram_main','asls_raw','asls_pca','asls_random','fixed4_raw','all_raw','all_uvarfs',
+                   'gram_asls_pca','gram_asls_random','layer_l2_main','layer_l2_gram_main','layer_l2_asls_raw']:
+        if family not in macro:
+            continue
+        rows=summary[summary.method_family==family].set_index('dataset').loc[DATASETS]
+        comparisons[family]=[f'{row.image_auroc_mean*100:.2f} ± {row.image_auroc_std*100:.2f}' if row.runs>1 else f'{row.image_auroc_mean*100:.2f}' for _,row in rows.iterrows()]
+    pairs=paired.copy()
+    for column in ['delta_auroc','ci95_lower','ci95_upper']:
+        pairs[column]*=100
+    normal_rows=[]; gram_bounds=[]
+    for diagnostic in data['diagnostics']:
+        for record in diagnostic['representation_audit']:
+            own=df[(df.dataset==diagnostic['dataset'])&(df.method==record['method'])].iloc[0]
+            normal=record['normal_cosine_geometry']['methods']['main']
+            normal_rows.append({'dataset':diagnostic['dataset'],'method':record['method'],
+                'objective':record['objective_definition'],'feature_dim':own.feature_dim,
+                'selection_geometry_error':own.uvarfs_geometry_error,'feasible':own.uvarfs_geometry_feasible,
+                'actual_cosine_error':normal['vs_selected_input_cosine']['cosine_gram_relative_error'],
+                'normal_fit_patch_1nn_agreement':normal['vs_selected_input_cosine']['normal_patch_1nn_agreement'],
+                'fixed_support_first_order_residual':own.get('uvarfs_fixed_support_first_order_residual'),
+                'effective_weight_dimension':own.get('uvarfs_effective_weight_dimension'),
+                'continuous_box_gap':own.get('uvarfs_box_optimality_gap')})
+            bound=record.get('budget_geometry_audit')
+            if bound is not None:
+                gram_bounds.append({'dataset':diagnostic['dataset'],'method':record['method'],
+                    'original_gram_budget_lower_bound':bound['geometry_error_lower_bound'],
+                    'original_budget_ruled_out':bound['budget_ruled_out_at_working_precision']})
+    normal_frame=pd.DataFrame(normal_rows)
+    normal_frame.to_csv(output/'normal_cosine_geometry.csv',index=False)
+    selected_columns=[name for name in ['dataset','method','layer_normalization','objective_branch','feature_dim','selected_layer_count',
+        'compression_ratio','memory_size','uvarfs_effective_weight_dimension','matching_and_aggregation_seconds',
+        'fit_seconds','memory_seconds','eval_seconds','peak_gpu_gb'] if name in df]
+    efficiency=df[df.method.isin(['main','gram_main','asls_raw','all_raw','layer_l2_main','layer_l2_gram_main'])][selected_columns].copy()
+    lines=['# Cosine/simplex U-VaRFS 全六回传分析','',
+        f'版本 `{data["experiment_version"]}`；Git `{data["git_revision"]}`；共 {len(df)} 行。训练不使用异常标签或 masks，所有 test labels 仅用于本报告评价。', '',
+        f'Main Macro Image AUROC={100*macro["main"]:.2f}%。宏平均按六数据集等权，随机方法先按五 seeds 聚合；全部结果列在同轮对照中，不据 test AUROC 选主输入、目标、lambda 或预算。', '',
+        '## 主结果','',markdown_table(table,table.columns.tolist()),'',
+        '## 同输入、同层与同维对照','',markdown_table(comparisons,comparisons.columns.tolist()),'',
+        'gram_* 保留原 quadratic objective 和 v11 稀疏求解；每个输入/目标分支的 PCA/Random 匹配自己的 Main 维数，Random-K 匹配 ASLS 层数。原/新目标会产生不同支持集与维数，应同时看性能和压缩，不能把跨输入变化归因于特征选择。', '',
+        '原算法的 Top-weight/prune/exchange/legacy 对照仍是 quadratic 目标，不因它们出现在 cosine 主分支而改写其数学身份；CSV 分别记录 objective_branch 和 uvarfs_objective_definition。', '',
+        '## 配对图像评价','',markdown_table(pairs,pairs.columns.tolist()),'',
+        f'{data["bootstrap_draws"]} 次按正常/异常分层的 image bootstrap，差值为 target_method 减 comparison（百分点）。随机 seeds 在每次 draw 内平均 AUC，不做预测 ensemble。无患者/slide 分组、多重比较校正或预设非劣界值。', '',
+        '## 实际正常几何与证书作用域','',markdown_table(normal_frame.round(7),normal_frame.columns.tolist()),'',
+        'cosine_simplex_cardinality 的 feasible 使用 actual cosine Gram error。权重总和为 1，维数惩罚是 λ·非零维数，variability 相对 full-input uniform weights 标定；beta/lambda 数字固定，但目标单位与原公式不同。', '',
+        '新目标非凸且包含离散支持。已独立核验有限候选池的每个 lambda 最低完整目标、simplex/floor/预算、权重/scales、一阶残差字段和 normal-only 选解。固定支持一阶残差不能证明全局稀疏最优；原 box gap、fixed-support Gram floor 和全局 Gram 预算下界只适用于原目标。', '',
+        '正常近邻仅排除自身，包含同图 patches；它不是官方 memory/test 成绩。正常 geometry 已保存且有明确来源，但未回传 fit features 时不能宣称报告重算了原始正常 Gram。', '',
+        '## 压缩与效率','',markdown_table(efficiency.round(6),efficiency.columns.tolist()),'',
+        '实际非零维数与有效权重维数均报告，以免用极小权重充数。fit/memory/eval/peak 为整套方法共享开销，包括原目标 warm start 和完整对照；不能重复计作单方法成本，也不能从 GPU 求解宣称科学创新或真实加速。', '',
+        '## 来源与实验边界','',
+        f'Git blobs 与保存 code fingerprint 核验：{data["git_blob_code_verified"]}。全局/逐数据集 CSV、逐图 AUROC/AP、随机 mean/sample SD、全部正常清单、ASLS 共享和方法维数核验通过。原始文件 SHA256 在 analysis_data.json，读取前后保持。', '',
+        '原始输入 Main 固定，完整 L2 消融保留；本轮目标升级授权不等于 L2 Main 切换。旧结果不能 resume 或混入当前版本。性能变化需由全部六数据集和 Brain/Liver/RESC localization 一起评估，不能把数学或 fixture 通过当作正向 AD 效果。', '',
+        '实验产物与本报告仅保留本地；代码与开发交接按默认授权同步仓库。', '']
+    if gram_bounds:
+        frame=pd.DataFrame(gram_bounds); frame.to_csv(output/'original_gram_budget_geometry.csv',index=False)
+        lines+=['## 原目标预算下界（只作对照）','',markdown_table(frame.round(7),frame.columns.tolist()),'',
+                '这些下界覆盖原 `[0,1]` box 权重与 unrenormalized Gram；不能用于排除新 cosine/simplex 目标的可行性。','']
+    (output/'analysis.md').write_text('\n'.join(lines),encoding='utf-8')
 
 
 def write_current_report(output,df,summary,paired,prevalence,data):

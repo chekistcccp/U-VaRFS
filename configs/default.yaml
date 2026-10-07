@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v11-forward-budget-audit
+results_dir: results/gpu-eval-v12-cosine-simplex
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -42,7 +42,18 @@ asls:
   max_layers: 6
 
 uvarfs:
+  # User-approved method upgrade; original objective is a full paired control.
+  objective: cosine_simplex_cardinality
+  ablation_objective: quadratic_gram
   sparsity_strategy: objective_forward_refit
+  cosine_support_step: 32
+  cosine_weight_floor_mass: 0.0001
+  cosine_geometry_chunk: 512
+  cosine_refit_max_iter: 2000
+  cosine_initial_step: 0.05
+  cosine_line_search_steps: 20
+  cosine_exchange_max_steps: 8
+  cosine_exchange_candidates: 8
   support_refit_max_iter: 2000
   support_exchange_max_steps: 8
   support_exchange_chunk: 256

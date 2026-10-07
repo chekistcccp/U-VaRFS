@@ -12,13 +12,14 @@ from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_all_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 from uvarfs.representation import normalization_modes, normalization_prefix
+from uvarfs.objectives import experiment_branches, COSINE
 
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
                              code_fingerprint,data_fingerprint,expected_method_names,completed_result_compatible,validate_results_version)
 
 
-def _append_layer_rows(layer_rows,out,dname,num_layers):
-    paths=[out/'asls.json']+[out/name/'asls.json' for name in ['layer_l2','raw_input']]
+def _append_layer_rows(layer_rows,out,dname,num_layers,cfg=None):
+    paths=[out/branch['folder']/'asls.json' for branch in experiment_branches(cfg)] if cfg is not None else [out/'asls.json']+[out/name/'asls.json' for name in ['layer_l2','raw_input']]
     for apath in paths:
         if not apath.exists():
             continue
@@ -27,6 +28,7 @@ def _append_layer_rows(layer_rows,out,dname,num_layers):
             layer_rows.append({
                 'dataset':dname,'layer':l,
                 'layer_normalization':obj.get('layer_normalization','none'),
+                'objective_branch':next((branch['objective'] for branch in experiment_branches(cfg) if out/branch['folder']==apath.parent),None) if cfg is not None else None,
                 'representation_role':'primary' if apath.parent==out else 'ablation',
                 'selected':int(l in obj.get('selected_layers',[])),
                 'probability':obj.get('probabilities',{}).get(str(l),np.nan),
@@ -118,13 +120,12 @@ def main():
             compatible=compatible and all((out/name).is_file() for name in (
                 'asls.json','fit_manifest.json','memory_manifest.json','image_predictions.csv',
                 'normal_geometry_audit.json','representation_manifest.json'))
-            _,modes=normalization_modes(cfg)
-            compatible=compatible and all((out/normalization_prefix(mode).rstrip('_')/name).is_file()
-                for mode in modes[1:] for name in ['asls.json','fit_manifest.json','uvarfs_main.json','normal_geometry_audit.json'])
+            compatible=compatible and all((out/branch['folder']/name).is_file()
+                for branch in experiment_branches(cfg) for name in ['asls.json','fit_manifest.json','uvarfs_main.json','normal_geometry_audit.json'])
             if compatible:
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
-                _append_layer_rows(layer_rows,out,dname,extractor.num_layers)
+                _append_layer_rows(layer_rows,out,dname,extractor.num_layers,cfg)
                 _save_partial(all_rows,layer_rows,res)
                 continue
 
@@ -140,6 +141,8 @@ def main():
                    'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                    'asls_discrete_selection':cfg['asls'].get('discrete_selection','geometry_search'),
                    'uvarfs_sparsity_strategy':cfg['uvarfs'].get('sparsity_strategy','objective_forward_refit'),
+                   'uvarfs_objective':cfg['uvarfs'].get('objective','quadratic_gram'),
+                   'objective_branches':experiment_branches(cfg),
                    'layer_normalization':cfg.get('representation',{}).get('layer_normalization','none'),
                    'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
                   out/'run_metadata.json')
@@ -190,12 +193,27 @@ def main():
                 memory_size=len(memories[r['method']]),experiment_version=EXPERIMENT_VERSION,
                 timing_scope='shared_dataset_all_methods',
                 layer_normalization=spec.get('layer_normalization','none'),
+                objective_branch=spec.get('objective_branch','quadratic_gram'),
                 asls_geometry_feasible=spec.get('asls_geometry',{}).get('feasible'),
                 asls_geometry_representation=spec.get('asls_geometry',{}).get('geometry_representation'),
                 asls_geometry_error=spec.get('asls_geometry',{}).get('geometry_error'),
                 asls_discrete_selection=spec.get('asls_geometry',{}).get('discrete_selection'),
             )
             if spec['kind']=='uvarfs':
+                obj=spec['obj']
+                r.update(uvarfs_objective_definition=obj.get('objective_definition','quadratic_gram'),
+                         uvarfs_geometry_metric=obj.get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius'))
+                if obj.get('objective_definition')==COSINE:
+                    r.update(uvarfs_geometry_error=obj['geometry_error'],uvarfs_geometry_feasible=obj['feasible'],
+                        uvarfs_solver_converged=obj['solver_converged'],uvarfs_selected_lambda=obj['lambda'],
+                        uvarfs_objective=obj['objective'],uvarfs_objective_certificate_scope=obj['objective_certificate_scope'],
+                        uvarfs_sparsity_strategy=obj['sparsity_strategy'],
+                        uvarfs_fixed_support_first_order_residual=obj['fixed_support_first_order_residual'],
+                        uvarfs_effective_weight_dimension=obj['effective_weight_dimension'],
+                        uvarfs_simplex_residual=obj['simplex_residual'],uvarfs_candidate_id=obj['candidate_id'],
+                        uvarfs_representation_term=obj['representation_term'],uvarfs_variability_term=obj['variability_term'],
+                        uvarfs_sparsity_term=obj['sparsity_term'],uvarfs_solver_iterations=obj['solver_iterations'])
+                    continue  # Original Gram bounds/certificates do not apply to cosine.
                 r.update(uvarfs_geometry_error=spec['obj']['geometry_error'],
                          uvarfs_geometry_feasible=spec['obj']['feasible'],
                          uvarfs_solver_converged=spec['obj']['solver_converged'],
@@ -229,7 +247,7 @@ def main():
 
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)
-        _append_layer_rows(layer_rows,out,dname,extractor.num_layers)
+        _append_layer_rows(layer_rows,out,dname,extractor.num_layers,cfg)
         _save_partial(all_rows,layer_rows,res)
         print(f'[{dname}] checkpoint saved: {metrics_path}',flush=True)
 

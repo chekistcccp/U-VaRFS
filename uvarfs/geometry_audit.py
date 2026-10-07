@@ -97,6 +97,9 @@ def audit_normal_geometry(patches, specs, layer_normalization='none'):
             diagnostic['vs_selected_input_cosine']=diagnostic['vs_selected_raw_cosine']
             weighted=apply_uvarfs(selected,spec['obj'])
             diagnostic['weighted_normal_row_norms']=describe_norms(weighted)
-            diagnostic['unrenormalized_weighted_gram_error']=spec['obj']['geometry_error']
+            metric=spec['obj'].get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius')
+            diagnostic['selection_geometry_metric']=metric
+            diagnostic['selection_geometry_error']=spec['obj']['geometry_error']
+            diagnostic['unrenormalized_weighted_gram_error']=spec['obj']['geometry_error'] if metric=='unrenormalized_weighted_gram_relative_frobenius' else None
         result['methods'][name]=diagnostic
     return result

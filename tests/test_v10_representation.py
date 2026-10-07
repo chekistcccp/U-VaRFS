@@ -89,6 +89,7 @@ def make_fixture(tmp_path,primary='none'):
     cfg=load_config(Path(__file__).resolve().parents[1]/'configs'/'default.yaml')
     cfg['methods']=[m for m in cfg['methods'] if m!='asls_exchange_refit_uvarfs']
     cfg['uvarfs']['sparsity_strategy']='objective_exchange_refit'  # Historical paired 74-method regression.
+    cfg['uvarfs'].update(objective='quadratic_gram',ablation_objective=None)
     cfg['representation']={'layer_normalization':primary,'ablation_layer_normalization':'l2' if primary=='none' else 'none'}
     cfg['model'].update(input_size=8,batch_size=2,num_workers=0)
     cfg['data'].update(fit_images=4,variability_images=4,patches_per_image=4,

@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前实验状态见第 35 节（v11 原目标前向支持集与预算诊断）**；第 36 节提供待批准的 U-VaRFS 目标升级提案，尚未接入训练。原始输入 Main 与完整层 L2 消融保留，L2 Main 切换须按第 19 节明确批准。较早版本交接保留历史语境。
+> **当前实验状态见第 37 节（v12 已批准的 cosine/simplex U-VaRFS）**。用户已批准目标升级；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
 
 ---
 
@@ -293,6 +293,8 @@ normal representation preservation
 
 ## 5.2 数学主线
 
+**历史原 quadratic 公式**：用户已于第 37 节明确批准 cosine/simplex 目标升级。本节公式在 `gram_*` 完整消融中保持，不再定义当前 Main；当前精确目标见第 5.4 节。该批准是明确方法变更，不能包装为等价提速。
+
 ASLS 选择层后，将对应 latent features 拼接：
 
 [
@@ -383,7 +385,9 @@ lambda|w|_1
 
 这条数学定义属于**研究主线，不要为了提速而改变目标函数**。
 
-## 5.3 当前 solver
+## 5.3 原目标控制 solver
+
+以下 batched FISTA / 原目标支持集求解仅属于 quadratic 控制；当前 Main 的分块 cosine 梯度、simplex refit 和支持候选见第 37 节。
 
 当前 `uvarfs/u_varfs.py` 已改为：
 
@@ -399,13 +403,13 @@ Rw=P(P^Tw)
 
 因此无需显式构造大的 (R=PP^T)。
 
-在连续 path 后使用原目标的精确单维删除损失做预算内剪枝与 refit；v9 再增加预算内两维交换和 refit。旧 Top-weight、v8 prune/refit 保留消融。每个 lambda 只接受原正常训练目标与几何误差均不变差的候选。这延续用户已授权的稀疏求解算法升级，不是新损失函数；固定支持集收敛不证明全局稀疏最优。完整定义和保护条件见第 33 节。
+在连续 path 后使用原目标的精确单维删除损失做预算内剪枝与 refit；v9 增加预算内两维交换，v11 增加独立零起点前向支持集候选。旧 Top-weight、prune/refit、exchange/refit 保留消融。每个 lambda 只接受原正常训练目标与几何误差均不变差的候选。这延续用户已授权的稀疏求解算法升级，不是新损失函数；固定支持集收敛不证明全局稀疏最优。完整定义和保护条件见第 35 节。
 
 当前默认：
 
 ```yaml
 beta: 0.002
-sparsity_strategy: objective_exchange_refit
+sparsity_strategy: objective_forward_refit
 support_refit_max_iter: 2000
 support_exchange_max_steps: 8
 support_exchange_chunk: 256
@@ -426,6 +430,20 @@ lambda selection 必须保持 label-free：
 > 从 lambda path 中选择满足 geometry tolerance 和最小 feature 数约束的最稀疏解；若不存在 feasible solution，则选 geometry error 最小者。
 
 禁止使用 anomaly AUROC 来挑 lambda。
+
+## 5.4 用户批准后的当前主目标
+
+ASLS 后正常 patch 拼接 X，定义 `p>=0, sum(p)=1`、`Y=X diag(sqrt(p))`、`C(p)=cosine_gram(Y)`、`C_full=cosine_gram(X)`、`p0=1/M`：
+
+```text
+min_p 0.5 * ||C_full-C(p)||_F² / ||C_full||_F²
+      + beta * ||P^T p||² / ||P^T p0||²
+      + lambda * ||p||_0
+```
+
+P 保持正常 nuisance variability 与原列归一化；P 全零时该项为零。原 beta/lambda grid 数字、32–256 非零预算保持，但损失单位已改变。支持上 `p_j>=1e-4/K`，零行候选无效，报告 effective dimension。采用固定支持 simplex 投影/下降线搜索及预算内支持候选，lambda 在有限生成池内比较完整目标，再按 actual cosine 容差选择最稀疏可行点或明确不可行 fallback。该非凸目标只有固定支持一阶残差，不借用原 convex/global Gram 证书。
+
+本次批准不更改 ASLS、Frozen backbone、无异常标签约束、数据/memory 预算、detector 或输入 Main。完整实现、配置、控制与边界见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)。
 
 ---
 
@@ -809,7 +827,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v9-support-exchange-audit
+gpu-eval-v12-cosine-simplex
 ```
 
 原因：
@@ -927,7 +945,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v9-support-exchange-audit
+experiment_version = gpu-eval-v12-cosine-simplex
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1127,16 +1145,16 @@ Codex 接手后优先级：
 
 1. 拉取最新 `main`；
 2. 不改研究设计；
-3. 先单独验证 Liver 新版 batched U-VaRFS：
+3. 先单独验证 Liver 新版 cosine/simplex U-VaRFS 与完整原目标控制：
    ```bash
    SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
    ```
    v4 六数据集已完成，mask 归一化完整；已有数据/模型时，新版可跳过准备阶段。
 4. 确认：
    - ASLS 有日志；
-   - batched FISTA 有日志；
+   - cosine/refit、候选 feasible/残差/有效维数和原 batched FISTA 控制有日志；
    - PCA GPU fit 有日志；
-   - memory/test 正常；
+   - 四支正常 manifest、152 方法与 memory/test 正常；
 5. Liver 完成后再全 6 benchmark；
 6. 再考虑双 3090 dataset-level parallel runner；
 7. 结果稳定后补缺失 baseline 与论文图表。
@@ -1313,7 +1331,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 35. 2026-10-07 v11 原目标前向支持集与全局预算诊断（当前状态）
+# 35. 2026-10-07 v11 原目标前向支持集与全局预算诊断（历史状态）
 
 版本 `gpu-eval-v11-forward-budget-audit`；独立输出 `results/gpu-eval-v11-forward-budget-audit/`。详细原目标推导、第 19 节检查、字段作用域和复跑说明见 [FORWARD_BUDGET_AUDIT.md](FORWARD_BUDGET_AUDIT.md)。实验回传与分析继续按第 28 节仅留本地，不在开发文档中同步实验结果。
 
@@ -1327,7 +1345,9 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 36. 2026-10-07 U-VaRFS 目标升级评审（待批准，当前训练仍为 v11）
+# 36. 2026-10-07 U-VaRFS 目标升级评审（批准前历史记录）
+
+本节保留提案阶段的待批准语境；用户批准现已收到并落实于第 37 节，不再因此阻止目标升级。L2 主输入仍不在本授权内。
 
 用户要求改进 U-VaRFS 以取得正向效果。可审核的具体方案见 [UV_COSINE_OBJECTIVE_PROPOSAL.md](UV_COSINE_OBJECTIVE_PROPOSAL.md)：actual cosine geometry + simplex 相对权重 + normal-reference 标定的 variability + cardinality 稀疏惩罚。
 
@@ -1338,3 +1358,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 新增检查覆盖独立 scalar sample-space oracle、缩放退化和尺度约束、cardinality 区别于 L1、零行/零 variability、来源支持/scales、报告覆盖保护及实验指纹隔离。数学可行不保证 BMAD 的 AUROC/AUPRO 改善；最终仍须固定设计运行全六。
 
 102 项本地检查通过（其中新增 10 项），3 项 CUDA 检查因本机无 runtime 跳过；diff 检查通过。原训练源码/配置/runner 与修改前一致，评审未改变实验指纹。实际拟合方法升级和真实性能验证仍待上述目标变更批准。
+
+---
+
+# 37. 2026-10-07 用户批准 cosine/simplex U-VaRFS（当前状态）
+
+用户明确批准：**“批准设计的改进，修改对应代码并同步到仓库”**。目标升级已经接入，不重复询问相同授权。版本 `gpu-eval-v12-cosine-simplex`，独立输出 `results/gpu-eval-v12-cosine-simplex/`；开发、数学、配置和第 19 节检查见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)。
+
+- Main 使用第 5.4 节的 actual cosine + simplex 相对权重 + normal-reference variability + cardinality。固定总权重、支持 floor 与零行拒绝避免尺度退化；不是原 Gram 目标的等价优化，也不是 Hard-Concrete。
+- 新 `cosine_uvarfs.py` 缓存 full-reference normal Gram，按块精确计算损失和解析梯度；固定支持用投影/下降线搜索与 BB 步长，保留原选中支持起点、原权重排序轨迹及独立 normal energy 轨迹，使用预设 K 候选、删除/交换和有限池 lambda 比较。记录真实目标分项、simplex/固定支持一阶残差、有效维数与下降历史，不宣称全局稀疏最优。
+- 原 `u_varfs.py` quadratic objective/FISTA/v11 forward 求解保持完整 `gram_*` 分支；PCA/Random 匹配各分支 Main 实际维数，全部原方法与五 seeds 保留。raw/L2 × cosine/Gram 四支，默认 152 方法、全六 912 行。显式旧 Top-weight/prune/exchange/legacy 控制的真实目标仍为 quadratic。
+- 同一正常图像/patch/扰动/DINO forward、每个输入一次 ASLS、按输入/有序层缓存原目标控制，memory 统一抽样。Frozen DINOv3、全部层候选、BMAD 六、ASLS 定义/预算、normal fit/variability/memory/feature 上限、beta/lambda 数字、cosine 1-NN、Top-1% 和 pixel protocol 保持。raw Main 仍固定，L2 Main 待批准状态不变。
+- resume/CSV/manifest 记录输入和真实 objective/metric，必须有四支完整拟合文件与新指纹。分析对新目标核查有限池选解和 simplex/维度/scales/证书作用域；原 Gram bounds 不用于新 cosine 可行性。新/旧方法同轮公平比较，不覆盖旧产物。
+- 实验、图表、日志和报告依第 28 节仅留本地；代码、配置、测试及开发交接检查通过后提交推送。真实数据/模型/CUDA 不在本工作机，数学/CPU fixture 不能证明正向 AUROC/AUPRO；服务器先 Liver 验证运行，再固定设计全六，不用 Liver test 指标调参。
+
+115 项本地数学/CPU/I/O 回归检查通过，4 项 CUDA 检查因本机缺少 runtime 跳过；shell/diff 检查通过。验证包括独立 autograd/有限差分梯度、SciPy 固定支持 simplex 解、两种 primary 配置的 152 方法 fit/memory/image/pixel 流程、完整分支 resume 与新报告字段。历史分析兼容性复核通过，原回传文件未改写。真实 BMAD 检测收益仍待服务器固定设计实验。

@@ -1,7 +1,7 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v11-forward-budget-audit`**。保持 patch ASLS 与原 U-VaRFS 目标，新增从零构建的原目标前向支持集/refit 候选，逐 lambda 保护旧交换解，并保存全局预算几何下界。原始输入 Main 与完整 L2 消融保留，新增同层旧交换对照，共 76 方法。两分支共享 normal 数据、扰动、DINO forward 与 memory 抽样；损失、beta/lambda、预算和 detector 保持。L2 主输入切换仍按 AGENTS 第 19 节待明确批准。开发与复跑说明见 [FORWARD_BUDGET_AUDIT.md](FORWARD_BUDGET_AUDIT.md)。新版性能仍需服务器验证。
+> **当前实现版本：`gpu-eval-v12-cosine-simplex`**。用户已批准 U-VaRFS 目标升级为实际 cosine geometry + simplex 相对权重 + normal-reference variability + cardinality 稀疏。原 quadratic/v11 solver 保留完整 `gram_*` 控制，与原始/L2 输入形成四支，共 152 方法；共享正常数据、扰动、DINO forward、ASLS 和 memory 抽样，各支 PCA/Random 匹配自己的 Main 维数。ASLS、数据/维度预算、Frozen backbone 与 cosine 1-NN 保持。说明见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)，真实性能须服务器验证。
 
-U-VaRFS 的目标升级方案见 [cosine 几何目标提案](UV_COSINE_OBJECTIVE_PROPOSAL.md)：保留实际 cosine geometry、固定相对权重尺度并使用维数惩罚。本次提供只读正常诊断与数学评审脚本；新目标尚未接入训练，按 AGENTS 第 5.2/19 节待明确批准。当前 Main、配置和实验指纹保持。
+原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；本次授权仅覆盖上述 U-VaRFS 数学升级。
 
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
@@ -11,7 +11,7 @@ U-VaRFS 的目标升级方案见 [cosine 几何目标提案](UV_COSINE_OBJECTIVE
 
 # U-VaRFS：DINOv3 自适应稀疏层选择与无监督可变性正则特征选择用于医学图像异常检测
 
-> **当前阶段：实验设计说明（v0.1）**  
+> **当前阶段：方法实现与 BMAD 验证**
 > 目标：在 BMAD 全部 6 个医学异常检测数据集上，验证 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS + Normal Memory Matching** 的轻量、无标签异常检测框架。
 
 ---
@@ -312,6 +312,18 @@ M = 4\times384=1536
 
 ### 7.3 表征几何保持
 
+用户批准后的 Main 使用 detector 实际 cosine 几何。令 `p>=0, sum(p)=1`，`Y=X diag(sqrt(p))`，`C(p)=cosine_gram(Y)`，`C_full=cosine_gram(X)`。当前精确目标为：
+
+```text
+0.5 * ||C_full-C(p)||_F² / ||C_full||_F²
++ beta * ||P^T p||² / ||P^T (1/M)||²
++ lambda * ||p||_0
+```
+
+保留 32–256 非零维，固定总正权重 floor mass=1e-4，零行候选无效；P 全零时 variability 项为零。Simplex 防止权重整体趋零；cardinality 惩罚不是 simplex 上恒为常数的 L1。候选/solver/证书边界见 [v12 实现](COSINE_UVARFS_UPGRADE.md)。
+
+下文保留原 quadratic 数学定义，当前仅用于完整 `gram_*` 控制。
+
 完整特征：
 
 [
@@ -377,7 +389,7 @@ R=PP^T
 \mathcal{L}_{var}=w^TRw
 ]
 
-### 7.5 最终 U-VaRFS
+### 7.5 原 U-VaRFS 目标（`gram_*` 消融）
 
 [
 \boxed{
@@ -401,9 +413,9 @@ K-X\operatorname{diag}(w)X^T
 
 用于防止某些 channel 被过度放大。
 
-### 7.6 计算优化
+### 7.6 原目标计算优化与新版求解
 
-不能直接对大量 patch 构造 (N\times N) Gram matrix。
+原 quadratic 控制使用 feature-space H 避免构建大量 patch 的 sample Gram。新主目标缓存既有 normal fit 的 reference Gram（默认 4096 行约 64 MiB），按块精确计算实际 cosine 损失与梯度；固定支持上用 simplex 投影与下降线搜索，预算内生成删除/交换候选。没有使用异常标签或缩减 geometry rows。
 
 令：
 
@@ -439,7 +451,7 @@ H
 
 当 (M\approx384\sim2000) 时，该问题规模很小。
 
-优化器：
+原目标控制优化器：
 
 - FISTA / Accelerated Proximal Gradient；
 - proximal soft-threshold；
@@ -451,9 +463,9 @@ H
 
 沿 (lambda) path 求解，并选择：
 
-> 在几何保持误差不超过 5% 的前提下，维度最小的解。
+> 在预设几何误差容差内取最稀疏可行点，无可行点则取 error 最小 fallback 并报告 `feasible=false`。Main 度量为 actual cosine；gram 控制度量仍是 unrenormalized weighted Gram，不把两种 feasible 或证书混用。新 lambda 仅在预先生成的有限支持池上比较完整目标，不声称全局非凸最优。
 
-额外报告固定预算：
+支持候选包含以下预算（当前仅评价所选表示，拟合候选不是逐 K 检测成绩）：
 
 - 64 dims；
 - 128 dims；
