@@ -7,6 +7,8 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
+> **最新开发状态见第 34 节（v10 完整输入归一化消融）**。原始输入 Main 暂保留；完整层 L2 输入消融已实现，Main 切换须按第 19 节收到明确批准。较早版本交接保留历史语境。
+
 ---
 
 # 0. 一句话锁定研究主线
@@ -1282,7 +1284,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 33. 2026-10-07 v9 支持集交换与实际余弦几何诊断（当前状态）
+# 33. 2026-10-07 v9 支持集交换与实际余弦几何诊断（历史开发记录）
 
 当前版本 `gpu-eval-v9-support-exchange-audit`；独立输出 `results/gpu-eval-v9-support-exchange-audit/`。开发与复跑说明见 [SUPPORT_EXCHANGE_AUDIT.md](SUPPORT_EXCHANGE_AUDIT.md)。延续第 32 节用户已授权的稀疏求解改进，回传结果与分析按第 28 节仅保留本地。
 
@@ -1294,3 +1296,17 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - Frozen DINOv3、全部层候选、BMAD 全六、cosine 1-NN、Top-1% 与 pixel evaluation 保持。新增实验不得覆盖/混合旧结果；分析脚本独立核验 Main lambda 选择、每点预算与旧候选保护，并复核原始产物哈希。
 
 72 项本地 CPU/math/I/O 检查通过，2 项 CUDA 对照因本机无 runtime 跳过；shell/diff 检查通过。真实 BMAD 数据、模型与 CUDA PyTorch 不在本机，尚无 v9 性能，不能宣称已改善检测。先服务器 Liver：`SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh`，核对 37 方法、交换日志、normal audit、manifest 和 pixel 指标后再运行全六。
+
+---
+
+# 34. 2026-10-07 v10 完整层输入归一化消融（当前状态）
+
+版本 `gpu-eval-v10-layer-alignment`；当前输出 `results/gpu-eval-v10-layer-normalization-ablation/`。实现、授权边界、完整第 19 节检查与复跑说明见 [LAYER_ALIGNMENT_ABLATION.md](LAYER_ALIGNMENT_ABLATION.md)。回传实验与分析继续按第 28 节仅保留本地。
+
+- Main 原始层输入保持 `representation.layer_normalization=none`，新增 `ablation_layer_normalization=l2` 完整分支，共 74 方法。原 37 方法、五 seeds、旧算法对照全部保留；不能据 test AUROC 从两分支择优定义 Main。
+- L2 分支在每层 patch 上归一化，normal/perturbed 特征均在同一空间计算 variability；fit、memory、query 一致应用，再进行原 U-VaRFS/PCA/Random 与最终 cosine。非零单位层拼接的 cosine Gram 与 ASLS 等权子集 Gram 一致；U-VaRFS 原加权 Gram 与 detector 再归一化 cosine 仍分别核查，不能保证几何可行或检测收益。
+- 两分支复用同一 normal 图像/patch IDs、四种扰动及显式 noise RNG、DINO forward，memory 抽样与预算完全相同。分支内全部 baseline 统一输入；Random-K 跟随该分支 Main K，PCA/Random feature 跟随该分支 Main 维度。ASLS loss/gates/离散规则、U-VaRFS 公式、beta/lambda、层/维度预算、Top-1% 与 detector 均保持。
+- 新增 representation manifest、每方法 CSV 输入模式、分支 fit/variability 清单与原始 backbone norm 统计。cache key 包含输入模式与有序层，resume 必须匹配版本/配置/代码/数据及完整分支产物。所有时间/peak 为整套 74 方法共享开销，不能宣称单方法加速。
+- Main 输入协议切换会影响研究实现与跨版本可比性，按第 19 节等待用户明确批准；批准后应固定 L2 Main 与全部 baseline，同时保留 `raw_input_*` 完整控制并使用 `results/gpu-eval-v10-layer-alignment/` 独立目录。已有 patch 和支持集求解授权不等于该新输入协议授权，不重复询问已有授权。
+
+81 项本地 CPU/math/I/O 检查通过，2 项 CUDA 对照因本机无 runtime 跳过；两种 primary 输入配置均有 74 方法 fit/memory/pixel fixture 验证。本机没有真实数据/模型/CUDA，未取得 v10 检测性能。先服务器 Liver，再 BMAD 全六；旧回传与历史产物不得覆盖。

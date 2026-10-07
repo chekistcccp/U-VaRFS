@@ -11,10 +11,13 @@ import hashlib
 import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+from uvarfs.representation import normalization_modes, normalization_prefix
 
 DATASETS = ['brain','liver','resc','oct2017','xray','camelyon16']
 PIXEL_DATASETS = {'brain','liver','resc'}
@@ -127,6 +130,44 @@ def audit_sparse_path(result, cfg):
             'selection_and_guards_verified':True}
 
 
+def audit_representation_protocol(folder, cfg, frame, primary_fit):
+    """Paired input branches must share data and perturbations, not feature values."""
+    if 'representation' not in cfg:
+        return []  # Historical v9 and earlier protocols have raw input only.
+    primary,modes=normalization_modes(cfg)
+    manifest=json.loads((folder/'representation_manifest.json').read_text())
+    observed=dict(zip(frame.method,frame.layer_normalization))
+    if (not manifest['shared_fit_images_and_patches'] or not manifest['shared_backbone_forwards'] or
+        manifest['primary_layer_normalization']!=primary or
+        manifest['ablation_layer_normalization']!=(modes[1] if len(modes)>1 else None) or
+        manifest['normalization_by_method']!=observed):
+        raise ValueError('representation manifest and per-method input conventions disagree')
+    records=[]
+    for mode in modes:
+        prefix='' if mode==primary else normalization_prefix(mode)
+        output=folder if not prefix else folder/prefix.rstrip('_')
+        fit=json.loads((output/'fit_manifest.json').read_text())
+        if fit['layer_normalization']!=mode or fit['variability_feature_space']!=mode:
+            raise ValueError('fit and variability use different feature input conventions')
+        for key in ['normal_train_indices','normal_train_paths','fit_images','variability_images',
+                    'patches_per_image','sampled_patches','perturbation_rng','backbone_raw_patch_norms']:
+            if fit[key]!=primary_fit[key]:
+                raise ValueError('representation ablation has a different normal data/perturbation budget')
+        own=prefix+'main'
+        if observed[own]!=mode:
+            raise ValueError('main input convention does not match fit')
+        a=json.loads((output/'asls.json').read_text())
+        u=json.loads((output/'uvarfs_main.json').read_text())
+        normal=json.loads((output/'normal_geometry_audit.json').read_text())
+        count=sum(batch['batch_images']*len(batch['patch_indices']) for batch in fit['sampled_patches'])
+        if a['layer_normalization']!=mode or normal['layer_feature_normalization']!=mode or normal['selection_candidate'] is not False or normal['normal_geometry_rows']!=count:
+            raise ValueError('normal geometry diagnostics use the wrong input convention or rows')
+        records.append({'method':own,'layer_normalization':mode,'layers':a['selected_layers'],
+                        'sparse_path_audit':audit_sparse_path(u,cfg['uvarfs']),
+                        'normal_cosine_geometry':normal})
+    return records
+
+
 def audit(results: Path, output: Path, draws: int):
     validate_output(results,output)
     hashes=source_hashes(results)
@@ -198,7 +239,8 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
         for method in ['asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
-                       'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','legacy_main']:
+                       'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','legacy_main',
+                       'layer_l2_main','raw_input_main']:
             if method in source.method.values:
                 comparisons[method]=[method]
         intervals=paired_bootstrap(predictions,comparisons,draws=draws)
@@ -214,6 +256,7 @@ def audit(results: Path, output: Path, draws: int):
         a=json.loads((folder/'asls.json').read_text())
         uv=json.loads((folder/'uvarfs_main.json').read_text())
         sparse_audit=audit_sparse_path(uv,cfg['uvarfs'])
+        representation_audit=audit_representation_protocol(folder,cfg,source,fit)
         normal_geometry=None
         if (folder/'normal_geometry_audit.json').is_file():
             normal_geometry=json.loads((folder/'normal_geometry_audit.json').read_text())
@@ -241,6 +284,7 @@ def audit(results: Path, output: Path, draws: int):
                             'fixed_support_box_gap':uv.get('fixed_support_box_gap'),
                             'lambda':uv['lambda'],'iterations':uv['solver_iterations'],
                             'sparse_path_audit':sparse_audit,'normal_cosine_geometry':normal_geometry,
+                            'representation_audit':representation_audit,
                             'mask_coverage':{k:len(v) if isinstance(v,list) else v for k,v in cov.items()},
                             'config':cfg})
         source['method_family']=source.method.str.replace(r'_seed\d+$','',regex=True)
@@ -301,7 +345,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda x:f'{100*x:.2f}' if pd.notna(x) else 'n.a.')
     comparison=pd.DataFrame({'dataset':DATASETS})
-    families=['main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
+    families=['main','layer_l2_main','raw_input_main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
               'asls_pooled_uvarfs','asls_raw','fixed4_raw','all_raw','randomk_raw','asls_random','asls_pca']
     wins={}
     for family in families:
@@ -354,7 +398,7 @@ def write_current_report(output,df,summary,paired,prevalence,data):
         'Brain/Liver/RESC 异常 masks 完整；其余数据集无 pixel 指标。所有标签仅用于评价，没有用 test AUROC 选层、lambda、维度或 detector。', '',
         '## 主结果','', '指标均为百分数；不以高 Pixel AUROC 替代 Pixel AP/AUPRO。','',
         markdown_table(table,table.columns.tolist()),'', '![Performance](performance.png)','',
-        '## 同轮公平比较','', 'Random 项均纳入全部五 seeds，报告 mean ± sample SD；Random-K 的 K 与 Main 相同。','',
+        '## 同轮公平比较','', 'Random 项均纳入全部五 seeds，报告 mean ± sample SD；每个输入分支的 Random-K 与该分支 Main 的 K 相同。','',
         markdown_table(comparison,comparison.columns.tolist()),'',
         f'在相同 ASLS 层输入下，U-VaRFS 在 {wins["asls_raw"]}/6 数据集高于 Raw，在 {wins["asls_random"]}/6 高于同维度 Random feature 均值，在 {wins["asls_pca"]}/6 高于 PCA。不能据此宣称全部数据集优于固定层或 PCA。','',
         f'配对差值为 Main 减 baseline，单位百分点。{data["bootstrap_draws"]} 次按正常/异常分层的 image bootstrap；每次 draw 内取各 seed AUC 均值，不将 seed 预测均值当作 ensemble。','',
@@ -389,19 +433,34 @@ def write_current_report(output,df,summary,paired,prevalence,data):
             continue
         point=audit['methods']['main']
         normal_rows.append({'dataset':diagnostic['dataset'],
-            'unit_layer_vs_raw_full_error':audit['unit_layer_consensus_vs_raw_full_cosine_error'],
-            'main_vs_raw_full_cosine_error':point['vs_raw_full_hierarchy']['cosine_gram_relative_error'],
+            'layer_normalization':audit.get('layer_feature_normalization','none'),
+            'unit_layer_vs_full_input_error':audit['unit_layer_consensus_vs_raw_full_cosine_error'],
+            'main_vs_full_input_cosine_error':point['vs_raw_full_hierarchy']['cosine_gram_relative_error'],
             'normal_1nn_agreement':point['vs_raw_full_hierarchy']['normal_patch_1nn_agreement'],
-            'main_vs_selected_raw_cosine_error':point['vs_selected_raw_cosine']['cosine_gram_relative_error']})
+            'main_vs_selected_input_cosine_error':point['vs_selected_raw_cosine']['cosine_gram_relative_error']})
     lines.extend(['## 稀疏求解与实际余弦几何核查','',
         'Main 每个 lambda 的预算、可行性、原选解规则以及相对旧候选的原目标/几何保护已独立核验。正常训练量改善不保证异常性能，连续解误差已超容差时不能仅归咎于 max_features 截断。',''])
     if normal_rows:
         frame=pd.DataFrame(normal_rows).round(8)
         frame.to_csv(output/'normal_cosine_geometry.csv',index=False)
         lines.extend([markdown_table(frame,frame.columns.tolist()),'',
-            '以上是相同 fit patches 上的只读诊断，不参与层/特征/lambda 选择。近邻比较仅排除自身，包含同图 patches 且对 ties 敏感，不等同于官方 memory/test 检测结果。',''])
+            '以上是相同 fit patches 上的只读诊断，不参与层/特征/lambda 选择。full/selected input 指当前归一化分支裁剪前的输入，并非一定是原始 backbone 数值。近邻比较仅排除自身，包含同图 patches 且对 ties 敏感，不等同于官方 memory/test 检测结果。',''])
     else:
         lines.extend(['本轮没有返回原始 fit patch 矩阵及 normal_geometry_audit.json，无法从逐图预测或 Q 恢复实际 concat/再归一化 cosine 误差；不将小型数学 fixture 的差异冒充真实 BMAD 诊断。下一版本新增这项正常训练诊断，输入和主目标保持原样。',''])
+    variants=[]
+    for diagnostic in data['diagnostics']:
+        for point in diagnostic.get('representation_audit',[]):
+            metric=df[(df.dataset==diagnostic['dataset'])&(df.method==point['method'])].iloc[0]
+            variants.append({'dataset':diagnostic['dataset'],'method':point['method'],
+                'layer_normalization':point['layer_normalization'],'layers':point['layers'],
+                'feature_dim':metric.feature_dim,'image_auroc':metric.image_auroc,
+                'image_auprc':metric.image_auprc,'aupro':metric.aupro,
+                'unit_layer_vs_full_input_cosine_error':point['normal_cosine_geometry']['unit_layer_consensus_vs_raw_full_cosine_error']})
+    if variants:
+        comparison=pd.DataFrame(variants)
+        comparison.to_csv(output/'representation_comparison.csv',index=False)
+        lines.extend(['## 表示输入的同轮对照','',markdown_table(comparison.round(7),comparison.columns.tolist()),'',
+            '输入分支复用相同正常图像/patches、扰动及 DINO forward，各自计算对应表示的 variability，全部方法采用同一分支内的一致输入和 memory 预算。归一化是预先固定的输入协议，不能按 test AUROC 从两个分支挑选主方法。',''])
     (output/'analysis.md').write_text('\n'.join(lines),encoding='utf-8')
 
 
@@ -488,7 +547,7 @@ def plot(output):
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     family=pd.read_csv(output/'family_summary.csv')
-    order=['main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
+    order=['main','layer_l2_main','raw_input_main','legacy_main','asls_prune_refit_uvarfs','asls_top_weights_uvarfs','asls_gate_prefix_uvarfs',
            'asls_raw','fixed4_raw','all_raw','randomk_raw','randomk_uvarfs','asls_random','asls_pca']
     order=[name for name in order if name in family.method_family.values]
     if 'asls_pooled_uvarfs' in family.method_family.values:

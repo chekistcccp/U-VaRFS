@@ -162,7 +162,7 @@ def test_paired_bootstrap_preserves_identical_method_and_mean_seed_auc():
 
 @pytest.mark.parametrize('old_version',['gpu-eval-v4-protocol-fixes','gpu-eval-v5-normal-audit',
                                       'gpu-eval-v6-patch-asls','gpu-eval-v7-geometry-audit',
-                                      'gpu-eval-v8-objective-sparsity'])
+                                      'gpu-eval-v8-objective-sparsity','gpu-eval-v9-support-exchange-audit'])
 def test_cross_version_results_cannot_be_overwritten(tmp_path,old_version):
     (tmp_path/'liver').mkdir()
     pd.DataFrame({'method':['main'],'experiment_version':[old_version]}).to_csv(tmp_path/'liver'/'metrics.csv',index=False)

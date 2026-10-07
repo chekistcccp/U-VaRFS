@@ -45,10 +45,11 @@ def compare_gram(reference, features, chunk=512):
 
 @torch.inference_mode()
 @precise_matmul()
-def audit_normal_geometry(patches, specs):
+def audit_normal_geometry(patches, specs, layer_normalization='none'):
     """Compare the actual concat/cosine geometry without changing its scaling.
 
-    ASLS uses equal-weight unit-layer Grams; downstream uses raw layer concat.
+    ASLS uses equal-weight unit-layer Grams; downstream concatenates features
+    in the declared input convention (raw or unit-layer L2).
     U-VaRFS preserves an unrenormalized weighted Gram; the detector renormalizes
     rows. Record these different quantities instead of treating their tolerances
     as a guarantee of normal nearest-neighbor preservation.
@@ -70,7 +71,11 @@ def audit_normal_geometry(patches, specs):
         denominator+=reference.double().square().sum()
     mismatch=float(torch.sqrt(numerator/denominator.clamp_min(1e-24)))
     result={'selection_candidate':False,'normal_geometry_rows':len(raw_gram),
-            'layer_feature_normalization':'raw features unchanged',
+            'layer_feature_normalization':layer_normalization,
+            'reference_scope':'full or selected input before latent feature selection; within this normalization branch',
+            'unit_layer_consensus_vs_full_input_cosine_error':mismatch,
+            # Historical raw-named aliases refer to this branch's input, not
+            # necessarily the original unnormalized backbone output.
             'unit_layer_consensus_vs_raw_full_cosine_error':mismatch,
             'layer_patch_norms':{str(l):describe_norms(patches[l]) for l in layers},
             'methods':{}}
@@ -85,9 +90,11 @@ def audit_normal_geometry(patches, specs):
         diagnostic={'layers':spec['layers'],'feature_dim':representation.shape[1],
                     'vs_raw_full_hierarchy':compare_gram(raw_gram,representation),
                     'vs_unit_layer_consensus':compare_gram(consensus,representation)}
+        diagnostic['vs_full_input_hierarchy']=diagnostic['vs_raw_full_hierarchy']
         if spec['kind']=='uvarfs':
             selected=F.normalize(x,dim=1)
             diagnostic['vs_selected_raw_cosine']=compare_gram(selected@selected.T,representation)
+            diagnostic['vs_selected_input_cosine']=diagnostic['vs_selected_raw_cosine']
             weighted=apply_uvarfs(selected,spec['obj'])
             diagnostic['weighted_normal_row_norms']=describe_norms(weighted)
             diagnostic['unrenormalized_weighted_gram_error']=spec['obj']['geometry_error']

@@ -29,11 +29,12 @@ def loader(samples,cfg,with_mask=False,indices=None,test=False):
 
 
 def transform(feats,spec,concat_cache=None):
-    key=tuple(spec['layers'])
+    mode=spec.get('layer_normalization','none')
+    key=(mode,tuple(spec['layers']))
     if concat_cache is not None and key in concat_cache:
         x=concat_cache[key]
     else:
-        x=concat_layers(feats,spec['layers'])
+        x=concat_layers(feats,spec['layers'],mode)
         if concat_cache is not None:
             concat_cache[key]=x
     kind=spec['kind']

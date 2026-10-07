@@ -3,7 +3,12 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v9-support-exchange-audit
+results_dir: results/gpu-eval-v10-layer-normalization-ablation
+
+representation:
+  # Primary protocol stays raw pending explicit approval of an input change.
+  layer_normalization: none
+  ablation_layer_normalization: l2
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m

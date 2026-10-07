@@ -269,6 +269,7 @@ class CPUExactIndex:
 def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,monkeypatch,geometry_representation):
     monkeypatch.setattr('uvarfs.pipeline_eval.make_index',lambda memory,cfg:CPUExactIndex(memory))
     cfg = load_config(Path(__file__).resolve().parents[1]/'configs'/'default.yaml')
+    cfg['representation']['ablation_layer_normalization']=None
     cfg['model'].update(input_size=8,batch_size=2,num_workers=0)
     cfg['data'].update(fit_images=4,variability_images=4,patches_per_image=4,
                        memory_images=4,memory_patches_per_image=4,memory_size=5,test_batch_size=2)

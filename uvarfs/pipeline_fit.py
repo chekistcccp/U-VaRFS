@@ -11,7 +11,8 @@ from .u_varfs import fit_uvarfs
 from .transforms import fit_pca
 from .utils import save_json
 from .variability import NormalVariability
-from .geometry_audit import audit_normal_geometry
+from .geometry_audit import audit_normal_geometry, describe_norms
+from .representation import normalization_modes, normalization_prefix, normalize_layers
 
 
 def _sample_indices(n, k, seed):
@@ -29,7 +30,7 @@ def perturbation_seed(seed, dataset, image_offset):
     return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8],'little') % (2**63)
 
 
-def fit_representation(extractor, train_samples, cfg, dataset_out):
+def collect_normal_inputs(extractor, train_samples, cfg):
     if not train_samples or any(s.label != 0 or s.split != 'train' for s in train_samples):
         raise ValueError('ASLS/U-VaRFS fit requires the official normal-reference training split')
     seed = int(cfg["seed"])
@@ -44,45 +45,48 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
         num_workers=int(cfg["model"]["num_workers"]), pin_memory=torch.cuda.is_available(),
     )
     layers = range(1, extractor.num_layers + 1)
-    pooled = {i: [] for i in layers}
+    _,modes=normalization_modes(cfg)
+    pooled = {mode:{i: [] for i in layers} for mode in modes}
     patchbuf = {i: [] for i in layers}
-    statistics = {i: NormalVariability(extractor.hidden_dim, PERTURBATIONS,
-                    float(cfg['data'].get('variability_epsilon',1e-6))) for i in layers}
+    statistics = {mode:{i: NormalVariability(extractor.hidden_dim, PERTURBATIONS,
+                    float(cfg['data'].get('variability_epsilon',1e-6))) for i in layers} for mode in modes}
     patch_manifest = []
     noise_manifest=[]
     global_pos = 0
     for batch in tqdm(dl, desc="fit-features", leave=False):
         x = batch["image"]
         feats = extractor(x)
-        pf = extractor.pooled(feats)
+        views={mode:normalize_layers(feats,mode) for mode in modes}
         b = x.shape[0]
         p = next(iter(feats.values())).shape[1]
         patch_ids = _patch_ids(p, ppi, seed + global_pos)
         patch_manifest.append({'image_offset':global_pos,'batch_images':b,'patch_indices':patch_ids.tolist()})
         for l in layers:
-            pooled[l].append(pf[l].cpu())
             patchbuf[l].append(feats[l][:, patch_ids, :].reshape(-1, extractor.hidden_dim).cpu())
+        for mode,features in views.items():
+            pf=extractor.pooled(features)
+            for l in layers:
+                pooled[mode][l].append(pf[l].cpu())
         if global_pos < var_n:
             take = min(b, var_n - global_pos)
             xvar = x[:take].cuda(non_blocking=True) if torch.cuda.is_available() else x[:take]
-            base = {l: feats[l][:take] for l in layers}
+            base = {mode:{l:features[l][:take] for l in layers} for mode,features in views.items()}
             noise_seed=perturbation_seed(seed,train_samples[0].dataset,global_pos)
             generator=torch.Generator(device=xvar.device).manual_seed(noise_seed)
             noise_manifest.append({'image_offset':global_pos,'batch_images':take,'seed':noise_seed})
-            for l in layers:
-                statistics[l].add_normal(base[l])
+            for mode in modes:
+                for l in layers:
+                    statistics[mode][l].add_normal(base[mode][l])
             for kind in PERTURBATIONS:
                 pert = extractor(perturb_batch(xvar, kind, generator=generator))
-                for l in layers:
-                    statistics[l].add_perturbation(kind,base[l],pert[l])
+                for mode in modes:
+                    view=normalize_layers(pert,mode)
+                    for l in layers:
+                        statistics[mode][l].add_perturbation(kind,base[mode][l],view[l])
         global_pos += b
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    pooled = {l: torch.cat(v).to(device) for l, v in pooled.items()}
-    patches = {l: torch.cat(v).to(device) for l, v in patchbuf.items()}
-    var_vectors = {}
-    for l in pooled:
-        var_vectors[l] = statistics[l].vectors().to(device)
-    save_json({'normal_train_indices':ids.tolist(),
+    raw_patches = {l: torch.cat(v).to(device) for l, v in patchbuf.items()}
+    manifest={'normal_train_indices':ids.tolist(),
                'normal_train_paths':[str(train_samples[int(i)].image) for i in ids],
                'fit_images':len(ids),'variability_images':min(var_n,len(ids)),
                'patches_per_image':ppi,'sampled_patches':patch_manifest,
@@ -90,15 +94,34 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
                'variability_epsilon':float(cfg['data'].get('variability_epsilon',1e-6)),
                'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                'perturbations':list(PERTURBATIONS),
+               'backbone_raw_patch_norms':{str(l):describe_norms(v) for l,v in raw_patches.items()},
                'perturbation_rng':{'recipe':'sha256:uvarfs-normal-noise-v1:seed:dataset:image_offset',
-                                   'base_seed':seed,'dataset':train_samples[0].dataset,'noise_batches':noise_manifest},
-               'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},
-              dataset_out/'fit_manifest.json')
+                                   'base_seed':seed,'dataset':train_samples[0].dataset,'noise_batches':noise_manifest}}
+    collected={}
+    for mode in modes:
+        collected[mode]={'patches':normalize_layers(raw_patches,mode),
+                         'pooled':{l:torch.cat(v).to(device) for l,v in pooled[mode].items()},
+                         'variabilities':{l:statistics[mode][l].vectors().to(device) for l in layers},
+                         'manifest':manifest}
+    return collected
+
+
+def fit_representation(extractor, train_samples, cfg, dataset_out, collected=None):
+    if not train_samples or any(s.label != 0 or s.split != 'train' for s in train_samples):
+        raise ValueError('ASLS/U-VaRFS fit requires the official normal-reference training split')
+    mode,_=normalization_modes(cfg)
+    collected=collect_normal_inputs(extractor,train_samples,cfg) if collected is None else collected
+    inputs=collected[mode]
+    patches,pooled,var_vectors=inputs['patches'],inputs['pooled'],inputs['variabilities']
+    save_json({**inputs['manifest'],'layer_normalization':mode,
+               'variability_feature_space':mode,
+               'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},dataset_out/'fit_manifest.json')
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
     representation=cfg['asls'].get('geometry_representation','patch')
     inputs={'pooled':pooled,'patch':patches}
     print(f"[fit] ASLS start: geometry={representation} layers={len(pooled)} samples={next(iter(inputs[representation].values())).shape[0]}", flush=True)
     asls = fit_asls(inputs[representation], layer_var, cfg["asls"])
+    asls['layer_normalization']=mode
     comparisons={representation:asls}
     for other in ['pooled','patch']:
         if other!=representation and any(method.startswith(f'asls_{other}_') for method in cfg['methods']):
@@ -123,8 +146,9 @@ def fit_representation(extractor, train_samples, cfg, dataset_out):
     return patches, var_vectors, asls
 
 
-def fit_method_specs(extractor, train_samples, cfg, dataset_out):
-    patches, variabilities, asls = fit_representation(extractor, train_samples, cfg, dataset_out)
+def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None):
+    patches, variabilities, asls = fit_representation(extractor, train_samples, cfg, dataset_out,collected)
+    input_mode,_=normalization_modes(cfg)
     selected = asls["selected_layers"]
     fixed = [3, 6, 9, 12]
     all_layers = list(range(1, extractor.num_layers + 1))
@@ -236,9 +260,30 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out):
         elif k.startswith('randomk_uvarfs_seed'):
             base='randomk_uvarfs'
         if base in enabled:
+            v['layer_normalization']=input_mode
             if k in {'main','asls_raw','asls_pca'} or base=='asls_random':
                 v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
     print('[fit] normal cosine geometry audit (diagnostic only)',flush=True)
-    save_json(audit_normal_geometry(patches,keep),dataset_out/'normal_geometry_audit.json')
+    audit=audit_normal_geometry(patches,keep,input_mode)
+    save_json(audit,dataset_out/'normal_geometry_audit.json')
     return keep
+
+
+def fit_all_method_specs(extractor, train_samples, cfg, dataset_out):
+    """Paired input ablation using the same images, patches and DINO forwards."""
+    primary,modes=normalization_modes(cfg)
+    collected=collect_normal_inputs(extractor,train_samples,cfg)
+    specs={}
+    for mode in modes:
+        settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None}}
+        prefix='' if mode==primary else normalization_prefix(mode)
+        output=dataset_out if mode==primary else dataset_out/prefix.rstrip('_')
+        fitted=fit_method_specs(extractor,train_samples,settings,output,collected)
+        specs.update({prefix+name:spec for name,spec in fitted.items()})
+    save_json({'primary_layer_normalization':primary,
+               'ablation_layer_normalization':modes[1] if len(modes)>1 else None,
+               'shared_fit_images_and_patches':True,'shared_backbone_forwards':True,
+               'normalization_by_method':{name:spec['layer_normalization'] for name,spec in specs.items()}},
+              dataset_out/'representation_manifest.json')
+    return specs

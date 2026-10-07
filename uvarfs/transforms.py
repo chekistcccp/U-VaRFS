@@ -3,10 +3,11 @@ import time
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
+from .representation import normalize_layer
 
 
-def concat_layers(feats: dict[int, torch.Tensor], layers: list[int]) -> torch.Tensor:
-    return torch.cat([feats[l] for l in layers], dim=-1)
+def concat_layers(feats: dict[int, torch.Tensor], layers: list[int], layer_normalization='none') -> torch.Tensor:
+    return torch.cat([normalize_layer(feats[l],layer_normalization) for l in layers], dim=-1)
 
 
 def fit_pca(x: torch.Tensor, n_components: int, seed: int = 42):

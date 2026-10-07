@@ -4,8 +4,9 @@ import hashlib
 import json
 import math
 from pathlib import Path
+from .representation import normalization_modes, normalization_prefix
 
-EXPERIMENT_VERSION = 'gpu-eval-v9-support-exchange-audit'
+EXPERIMENT_VERSION = 'gpu-eval-v10-layer-alignment'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
@@ -19,6 +20,11 @@ def expected_method_names(cfg):
             names.append(method)
     if len(names) != len(set(names)):
         raise ValueError('duplicate methods or random baseline seeds')
+    _,modes=normalization_modes(cfg)
+    base=names.copy()
+    names.extend(normalization_prefix(mode)+name for mode in modes[1:] for name in base)
+    if len(names)!=len(set(names)):
+        raise ValueError('normalization ablation method names collide')
     return sorted(names)
 
 

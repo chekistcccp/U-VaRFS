@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v9-support-exchange-audit`**。保持已授权的 normal patch ASLS 组合搜索，在同一 U-VaRFS 目标下增加预算内维度交换与 refit，保留 v8 同层对照和全部原 baseline，共 37 方法。固定正常扰动 RNG 并新增实际 cosine 几何的只读诊断；特征归一化、损失、beta/lambda、数据/表示预算和 detector 保持。算法、范围检查与服务器复跑步骤见 [SUPPORT_EXCHANGE_AUDIT.md](SUPPORT_EXCHANGE_AUDIT.md)。新版真实性能仍需服务器验证。
+> **当前实现版本：`gpu-eval-v10-layer-alignment`**。保持已授权的 patch ASLS 组合搜索与原 U-VaRFS 支持集交换/refit；原始输入 Main 保留，新增完整层 L2 归一化消融，共 74 方法。两分支共享正常图像/patches、扰动、DINO forward 与 memory 抽样，各自一致地计算 variability 和 matching 输入。损失、beta/lambda、所有预算及 detector 保持；Main 输入切换按 AGENTS 第 19 节等待明确批准。实现与复跑说明见 [LAYER_ALIGNMENT_ABLATION.md](LAYER_ALIGNMENT_ABLATION.md)。新版真实性能仍需服务器验证。
 
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
@@ -206,7 +206,7 @@ K_C = \frac{1}{L}\sum_{l=1}^{L} K_l
 
 v6 按用户批准将 patch geometry 作为 Main 输入，保留 `asls_pooled_raw`/`asls_pooled_uvarfs` 消融。通过 layer-Gram 内积等价计算控制内存；原 sigmoid/Adam/loss/离散规则和数据预算保持。不以测试性能择优选择版本。
 
-当前 v8 按用户进一步要求升级离散稀疏规则：正常几何组合搜索作为主选层，原目标驱动剪枝和固定支持集重优化作为主特征稀疏化。旧前缀、旧特征截断和完整旧流程均保留同轮对照。数学目标与数据/表示预算保持，算法边界见 [升级说明](OBJECTIVE_SPARSITY_UPGRADE.md)。
+v8 按用户要求升级为正常几何组合搜索与原目标剪枝/refit，v9 再加入原目标支持集交换/refit。v10 增加完整输入归一化消融；旧前缀、旧特征截断和完整旧流程继续保留同轮对照。算法边界见 [稀疏升级说明](OBJECTIVE_SPARSITY_UPGRADE.md)、[交换说明](SUPPORT_EXCHANGE_AUDIT.md) 和 [输入消融说明](LAYER_ALIGNMENT_ABLATION.md)。
 
 ### 6.3 Layer variability
 
@@ -229,7 +229,7 @@ u_v^j = \frac{\mathbb{E}_i[(f_j(x_i)-f_j(T_v(x_i)))^2]}{\operatorname{Var}_i(f_j
 p_l = \operatorname{sigmoid}(a_l)
 ]
 
-当前代码使用 sigmoid continuous layer gates 与 Adam。它不是 Hard-Concrete 或严格的 L0 relaxation。最终按概率排序，再在预设层数预算内选取满足 geometry tolerance 的最小前缀集合，检测阶段仅使用选中的层。
+当前代码使用 sigmoid continuous layer gates 与 Adam。它不是 Hard-Concrete 或严格的 L0 relaxation。Main 在预设层数预算内搜索满足 geometry tolerance 的最小层组合；原按概率排序的前缀规则作为同轮消融保留，检测阶段仅使用各方法选中的层。
 
 目标函数：
 
@@ -258,7 +258,7 @@ p_l = \operatorname{sigmoid}(a_l)
 \frac{\|K_C-K_g\|_F}{\|K_C\|_F} \le 0.05
 ]
 
-该条件表示相对 Frobenius 几何误差不超过 0.05，不等同于解释方差或“保留 95% 信息”。若层数预算内无可行前缀，当前实现返回预算上限前缀并明确记录 `feasible=false`。
+该条件表示相对 Frobenius 几何误差不超过 0.05，不等同于解释方差或“保留 95% 信息”。Main 在 2–6 层组合内按几何容差和预设正常数据规则选择；无可行组合时明确记录 `feasible=false`，不能将 fallback 写为达标。前缀消融仍沿用其原 fallback 规则。
 
 默认允许 2–6 层，实际层数由正常数据决定。记录 gate 范围、梯度和选层几何误差，以诊断饱和与几何退化。
 

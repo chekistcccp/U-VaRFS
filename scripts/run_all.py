@@ -9,26 +9,30 @@ import torch
 from uvarfs.utils import load_config, set_seed, ensure_dir, save_json
 from uvarfs.data import discover_bmad_roots, scan_split, mask_coverage, validate_pixel_masks, PIXEL_DATASETS
 from uvarfs.dinov3 import DINOv3Extractor
-from uvarfs.pipeline_fit import fit_method_specs
+from uvarfs.pipeline_fit import fit_all_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
+from uvarfs.representation import normalization_modes, normalization_prefix
 
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
                              code_fingerprint,data_fingerprint,expected_method_names,completed_result_compatible,validate_results_version)
 
 
 def _append_layer_rows(layer_rows,out,dname,num_layers):
-    apath=out/'asls.json'
-    if not apath.exists():
-        return
-    obj=json.loads(apath.read_text(encoding='utf-8'))
-    for l in range(1,num_layers+1):
-        layer_rows.append({
-            'dataset':dname,'layer':l,
-            'selected':int(l in obj.get('selected_layers',[])),
-            'probability':obj.get('probabilities',{}).get(str(l),np.nan),
-            'variability':obj.get('variability',{}).get(str(l),np.nan),
-            'geometry_error':obj.get('geometry_error',np.nan),
-        })
+    paths=[out/'asls.json']+[out/name/'asls.json' for name in ['layer_l2','raw_input']]
+    for apath in paths:
+        if not apath.exists():
+            continue
+        obj=json.loads(apath.read_text(encoding='utf-8'))
+        for l in range(1,num_layers+1):
+            layer_rows.append({
+                'dataset':dname,'layer':l,
+                'layer_normalization':obj.get('layer_normalization','none'),
+                'representation_role':'primary' if apath.parent==out else 'ablation',
+                'selected':int(l in obj.get('selected_layers',[])),
+                'probability':obj.get('probabilities',{}).get(str(l),np.nan),
+                'variability':obj.get('variability',{}).get(str(l),np.nan),
+                'geometry_error':obj.get('geometry_error',np.nan),
+            })
 
 
 def _save_partial(all_rows,layer_rows,res):
@@ -49,6 +53,7 @@ def main():
     args=ap.parse_args()
 
     cfg=load_config(args.config)
+    expected_method_names(cfg)  # Validate representation conventions before loading DINO.
     set_seed(int(cfg['seed']))
     paths=cfg.get('paths',{})
     processed=Path(paths.get('processed_data','data/processed/BMAD'))
@@ -111,7 +116,11 @@ def main():
                 metadata,progress={},{}
             compatible=completed_result_compatible(existing,metadata,progress,cfg,code_hash,dname in PIXEL_DATASETS,data_hash)
             compatible=compatible and all((out/name).is_file() for name in (
-                'asls.json','fit_manifest.json','memory_manifest.json','image_predictions.csv'))
+                'asls.json','fit_manifest.json','memory_manifest.json','image_predictions.csv',
+                'normal_geometry_audit.json','representation_manifest.json'))
+            _,modes=normalization_modes(cfg)
+            compatible=compatible and all((out/normalization_prefix(mode).rstrip('_')/name).is_file()
+                for mode in modes[1:] for name in ['asls.json','fit_manifest.json','uvarfs_main.json','normal_geometry_audit.json'])
             if compatible:
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
@@ -131,6 +140,7 @@ def main():
                    'asls_geometry_representation':cfg['asls'].get('geometry_representation','patch'),
                    'asls_discrete_selection':cfg['asls'].get('discrete_selection','geometry_search'),
                    'uvarfs_sparsity_strategy':cfg['uvarfs'].get('sparsity_strategy','objective_exchange_refit'),
+                   'layer_normalization':cfg.get('representation',{}).get('layer_normalization','none'),
                    'timing_scope':'fit/memory/eval/peak are dataset-wide and shared across methods'},
                   out/'run_metadata.json')
 
@@ -141,7 +151,7 @@ def main():
         t0=time.time()
         t=time.time()
         print(f'[{dname}] stage 1/3: fit ASLS/U-VaRFS',flush=True)
-        specs=fit_method_specs(extractor,train,cfg,out)
+        specs=fit_all_method_specs(extractor,train,cfg,out)
         if sorted(specs)!=expected_method_names(cfg):
             raise ValueError(f'{dname}: fitted methods do not match the configured protocol')
         fit_s=time.time()-t
@@ -179,6 +189,7 @@ def main():
                 compression_ratio=1.0-dim/max(candidate_dim,1),
                 memory_size=len(memories[r['method']]),experiment_version=EXPERIMENT_VERSION,
                 timing_scope='shared_dataset_all_methods',
+                layer_normalization=spec.get('layer_normalization','none'),
                 asls_geometry_feasible=spec.get('asls_geometry',{}).get('feasible'),
                 asls_geometry_representation=spec.get('asls_geometry',{}).get('geometry_representation'),
                 asls_geometry_error=spec.get('asls_geometry',{}).get('geometry_error'),
