@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前工程状态见第 38 节（v13 评价收尾修正）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
+> **当前工程状态见第 39 节（v14 固定支持数值精修）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
 
 ---
 
@@ -328,7 +328,8 @@ mathcal{L}_{rep}
 left|
 XX^T-
 Xoperatorname{diag}(w)X^T
-ight|_F^2.
+
+ight|_F^2.
 ]
 
 对每种轻微扰动构建 feature variability：
@@ -358,7 +359,8 @@ min_{0le wle1}
 rac12
 left|
 XX^T-Xoperatorname{diag}(w)X^T
-ight|_F^2
+
+ight|_F^2
 +
 eta w^TRw
 +
@@ -827,7 +829,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v13-evaluation-finalization
+gpu-eval-v14-fixed-support-polish
 ```
 
 原因：
@@ -945,7 +947,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v13-evaluation-finalization
+experiment_version = gpu-eval-v14-fixed-support-polish
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1376,7 +1378,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 38. 2026-10-07 v13 评价统计收尾修正（当前工程状态）
+# 38. 2026-10-07 v13 评价统计收尾修正（历史工程交接）
 
 版本 `gpu-eval-v13-evaluation-finalization`；独立输出 `results/gpu-eval-v13-evaluation-finalization/`。主方法仍为第 5.4/37 节已批准的 cosine/simplex/cardinality U-VaRFS；详细工程定义与第 19 节检查见 [EVALUATION_FINALIZATION.md](EVALUATION_FINALIZATION.md)。实验结果、图表、日志与分析仍按第 28 节只留本地。
 
@@ -1388,3 +1390,19 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - ASLS、原/新 U-VaRFS 求解器与选择规则、Frozen backbone、raw Main/L2 消融、152 方法、五 seeds、正常 fit/variability/memory/维度预算、beta/lambda、cosine 1-NN、Top-1% 与 pixel 定义全部不变。本轮无新的训练方法授权需求，没有根据局部 test 结果改训练。
 
 129 项本地数学/CPU/I/O 回归通过，4 项 CUDA 检查因缺少 runtime 跳过。独立 sklearn bootstrap oracle 覆盖 ties、单类别 draw、不同 batch sizes；模拟统计中断核验预测/点估计保留与进度，检查缺 CSV 的历史版本保护、正常拟合预算与共享分支审计。训练源码逐文件对照不变；真实 BMAD、权重和 CUDA 不在本机，先服务器 Liver 验证收尾，再固定设计全六。
+
+
+---
+
+# 39. 2026-10-08 v14 固定支持数值精修（当前工程状态）
+
+版本 `gpu-eval-v14-fixed-support-polish`；独立输出 `results/gpu-eval-v14-fixed-support-polish/`。当前 Main 仍为第 5.4/37 节已批准的 cosine/simplex/cardinality U-VaRFS 与 raw 输入，完整开发与第 19 节检查见 [FIXED_SUPPORT_POLISH.md](FIXED_SUPPORT_POLISH.md)。回传指标、分析与图表依第 28 节仅留本地，不写入本开发交接。
+
+- 原 normal sample-space 目标/解析梯度、P 标定、simplex floor、projected BB/Armijo、K 与支持候选保持。固定支持投影求解后，残差未达原阈值时使用已有 SciPy SLSQP 对同一目标精修；默认最多 200 次、ftol=1e-12，只影响数值求解，不改变 beta/lambda/geometry/维度预算。
+- 精修端点经过相同 simplex/floor 投影后重新评价，严格下降才接受；无效或无下降保留原点。optimizer success 独立记录，最终收敛仍使用真实固定支持投影残差。优化器内部试探点不作为已接受的单调轨迹，不宣称非凸全局最优或实际检测收益。
+- initial candidate 与每次支持交换的全部 refit 记录精修目标、残差、状态、次数与耗时；总成本含全部候选/交换。CPU 仅控制小权重向量，目标继续原 Torch device/dtype；服务器须检查增加的同步与求解成本。
+- 原 quadratic/v11 完整控制、四支 152 方法、五 seeds、同维 PCA/Random、共享 normal fit/variability/ASLS/memory、Frozen backbone/all layers、BMAD 六、detector/Top-1%/pixel 定义保持，L2 Main 仍不在授权内。
+- 精修会改变数值权重与支持轨迹，v14 使用独立目录与新指纹；不得覆盖或混合旧结果。分析器核验精修下降/收敛作用域/完整成本，同时兼容旧 v12 无精修记录的审计。v13 bootstrap/预测保存/统计进度/部分版本保护均保留。
+- 本地验证数学、CPU/I/O、完整控制与断点；真实 BMAD、模型和 CUDA 缺失。服务器先 Liver 验证运行/成本，再固定设计全六；不得按 Liver test 指标调参。代码检查完成后沿 main 提交推送，结果默认仅留本地。
+
+本轮完整回归：140 passed，5 skipped（本机无 CUDA）；两个输入 primary 的 152 方法、独立原 quadratic 控制、数学/端点/残差/成本保护、评价与 resume 通过。旧 v12 完整回传的 24 个主分支审计重新通过，748 个原文件 SHA256 保持；loss/投影/coverage AST、ASLS/原 solver/fit/eval/backbone/detector 代码及除新增数值设置/版本目录外全部配置对照保持。shell/diff 检查通过；真实服务器的 v14 异常检测性能尚未验证。

@@ -1,7 +1,7 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v13-evaluation-finalization`**。主方法仍是已批准的实际 cosine geometry + simplex 相对权重 + normal-reference variability + cardinality 稀疏。原 quadratic/v11 solver 保留完整 `gram_*` 控制，与原始/L2 输入形成四支，共 152 方法；所有正常数据、ASLS、预算和 detector 保持。v13 仅等价加速 bootstrap、在统计前保存预测/点估计并增加统计阶段进度；不以局部回传调整训练。方法见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)，收尾与部分回传诊断见 [EVALUATION_FINALIZATION.md](EVALUATION_FINALIZATION.md)。
+> **当前实现版本：`gpu-eval-v14-fixed-support-polish`**。Main 仍为已批准的 cosine/simplex/cardinality U-VaRFS 与 raw 输入。保留 projected BB/Armijo 后，增加同一固定支持目标的 SLSQP 精修，仅接受重新投影后严格降低实际目标的端点；是否收敛仍由真实一阶残差决定。原 quadratic/v11 solver 与 raw/L2 四支共 152 方法、正常数据/ASLS/维度/memory 预算和 detector 保持。方法见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)，当前数值求解、成本与版本隔离见 [FIXED_SUPPORT_POLISH.md](FIXED_SUPPORT_POLISH.md)；v13 评价收尾修正继续保留。
 
-原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；本次授权仅覆盖上述 U-VaRFS 数学升级。
+原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；v12 目标变更授权仅覆盖上述 U-VaRFS 数学升级，v14 在该目标内改进数值求解。
 
 已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
@@ -320,7 +320,7 @@ M = 4\times384=1536
 + lambda * ||p||_0
 ```
 
-保留 32–256 非零维，固定总正权重 floor mass=1e-4，零行候选无效；P 全零时 variability 项为零。Simplex 防止权重整体趋零；cardinality 惩罚不是 simplex 上恒为常数的 L1。候选/solver/证书边界见 [v12 实现](COSINE_UVARFS_UPGRADE.md)。
+保留 32–256 非零维，固定总正权重 floor mass=1e-4，零行候选无效；P 全零时 variability 项为零。Simplex 防止权重整体趋零；cardinality 惩罚不是 simplex 上恒为常数的 L1。目标与候选池定义见 [v12 实现](COSINE_UVARFS_UPGRADE.md)，当前固定支持求解与证书边界见 [v14 精修](FIXED_SUPPORT_POLISH.md)。
 
 下文保留原 quadratic 数学定义，当前仅用于完整 `gram_*` 控制。
 

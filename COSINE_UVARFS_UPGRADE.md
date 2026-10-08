@@ -1,5 +1,7 @@
 # v12：已批准的 cosine/simplex U-VaRFS
 
+本文保留 v12 目标升级开发记录。当前 v14 在同一目标内加入固定支持数值精修，现行 solver 与版本规则见 [FIXED_SUPPORT_POLISH.md](FIXED_SUPPORT_POLISH.md)。
+
 用户明确批准：**“批准设计的改进，修改对应代码并同步到仓库”**。此前 [目标提案](UV_COSINE_OBJECTIVE_PROPOSAL.md) 的待批准状态由本授权取代。本版本实际接入新的主目标，不能称为原公式的等价工程优化。
 
 项目仍为 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS 的无异常标签医学异常检测研究**，最终为 BMAD 全六。版本 `gpu-eval-v12-cosine-simplex`，默认输出 `results/gpu-eval-v12-cosine-simplex/`；旧结果不改写、不续接或混合。

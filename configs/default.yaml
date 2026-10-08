@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v13-evaluation-finalization
+results_dir: results/gpu-eval-v14-fixed-support-polish
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -50,6 +50,9 @@ uvarfs:
   cosine_weight_floor_mass: 0.0001
   cosine_geometry_chunk: 512
   cosine_refit_max_iter: 2000
+  # Same-objective numerical polish; optimizer success is not convergence.
+  cosine_polish_max_iter: 200
+  cosine_polish_ftol: 1.0e-12
   cosine_initial_step: 0.05
   cosine_line_search_steps: 20
   cosine_exchange_max_steps: 8

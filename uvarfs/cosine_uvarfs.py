@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import time
 
+import numpy as np
+from scipy.optimize import minimize
 import torch
 
 from .numerics import precise_matmul
@@ -100,6 +102,70 @@ class CosineObjective:
         return value,g if gradient else None,terms
 
 
+def polish_simplex(engine, active, p, cfg, label, state=None):
+    """Guarded SQP endpoint refinement of the SAME fixed-support objective.
+
+    SciPy controls only the <=256-dimensional vector on CPU; the blocked Torch
+    loss/analytic gradient keep the original dtype/device, normal data and loss.
+    Internal SQP iterates need not be monotone. Only a projected, independently
+    evaluated endpoint with strict actual descent replaces the incoming point.
+    SciPy success is never used as a first-order or global certificate.
+    """
+    floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
+    maximum=int(cfg.get('cosine_polish_max_iter',200))
+    ftol=float(cfg.get('cosine_polish_ftol',1e-12))
+    if maximum<0 or not np.isfinite(ftol) or ftol<=0:
+        raise ValueError('invalid cosine polish limits')
+    value,g,terms=engine.evaluate(active,p,True) if state is None else state
+    residual=float((p-project_simplex(p-g,floor)).norm())
+    diag={'method':'slsqp_fixed_support','attempted':False,'accepted':False,
+          'before':float(value),'after':float(value),'residual_before':residual,
+          'residual_after':residual,'optimizer_success':None,'optimizer_status':None,
+          'optimizer_message':None,'iterations':0,'objective_evaluations':0,
+          'seconds':0.,'termination':'disabled' if maximum==0 else 'already_stationary'}
+    if maximum==0 or residual<=float(cfg.get('tol',1e-5)):
+        return p,terms,diag
+    started=time.perf_counter(); evaluations=engine.evaluations
+    print(f'[{label}] cosine-polish start K={len(active)} loss={float(value):.6g} residual={residual:.3e}',flush=True)
+    def objective(weights):
+        trial=p.new_tensor(weights)
+        loss,gradient,_=engine.evaluate(active,trial,True)
+        return float(loss),gradient.detach().double().cpu().numpy()
+    callback_iterations=0; last_log=started
+    def progress(_):
+        nonlocal callback_iterations,last_log
+        callback_iterations+=1
+        now=time.perf_counter()
+        if now-last_log>=30:
+            print(f'[{label}] cosine-polish iter={callback_iterations} elapsed={now-started:.1f}s',flush=True)
+            last_log=now
+    solved=minimize(objective,p.detach().double().cpu().numpy(),method='SLSQP',jac=True,
+        bounds=[(floor/len(p),1.)]*len(p),
+        constraints={'type':'eq','fun':lambda weights:weights.sum()-1.,
+                     'jac':lambda weights:np.ones_like(weights)},
+        callback=progress,options={'ftol':ftol,'maxiter':maximum})
+    diag.update(attempted=True,optimizer_success=bool(solved.success),
+                optimizer_status=int(solved.status),optimizer_message=str(solved.message),
+                iterations=int(solved.nit),termination='endpoint_rejected')
+    # Invalid endpoints cannot replace a valid projected descent solution.
+    endpoint=np.asarray(solved.x)
+    trial=p.new_tensor(endpoint) if endpoint.shape==tuple(p.shape) else None
+    if trial is not None and bool(torch.isfinite(trial).all()):
+        trial=project_simplex(trial,floor)
+        trial_value,trial_g,trial_terms=engine.evaluate(active,trial,True)
+        if trial_value<value:
+            p=trial; value=trial_value; g=trial_g; terms=trial_terms
+            diag.update(accepted=True,termination='strict_objective_descent')
+    residual=float((p-project_simplex(p-g,floor)).norm())
+    diag.update(after=float(value),residual_after=residual,
+                objective_evaluations=engine.evaluations-evaluations,
+                seconds=time.perf_counter()-started)
+    print(f'[{label}] cosine-polish done accepted={diag["accepted"]} '
+          f'optimizer_status={diag["optimizer_status"]} loss={float(value):.6g} '
+          f'residual={residual:.3e} elapsed={diag["seconds"]:.1f}s',flush=True)
+    return p,terms,diag
+
+
 def refit_simplex(engine, active, initial, cfg, label):
     floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
     p=project_simplex(initial,floor)
@@ -142,10 +208,23 @@ def refit_simplex(engine, active, initial, cfg, label):
         diff=p-old_p; curvature=(diff.double()*(g-old_g).double()).sum()
         step=float((diff.double().square().sum()/curvature).clamp(1e-8,1e3)) if curvature>0 else trial_step
         used=iteration+1
-    residual=float((p-project_simplex(p-g,floor)).norm())
+    projected_status=status; projected_iterations=used
+    old_p=p
+    p,terms,polish=polish_simplex(engine,active,p,cfg,label,(value,g,terms))
+    if polish['accepted']:
+        relative=float((p-old_p).norm()/old_p.norm().clamp_min(1e-12))
+        history.append({'iteration':used+polish['iterations'],'phase':'slsqp_endpoint',
+                        'before':polish['before'],'after':polish['after']})
+    residual=polish['residual_after']
+    if residual<=tolerance:
+        status='fixed_support_stationary'
+    elif polish['accepted']:
+        status='polished_nonstationary'
     return p,terms,{'fixed_support_first_order_residual':residual,
         'fixed_support_converged':residual<=tolerance,'solver_status':status,
-        'solver_iterations':used,'relative_change':relative,'descent_history':history}
+        'solver_iterations':used+polish['iterations'],'projected_refit_iterations':projected_iterations,
+        'projected_refit_status':projected_status,'polish':polish,
+        'relative_change':relative,'descent_history':history}
 
 
 def covering_support(x, ranking, count):
@@ -200,7 +279,8 @@ def exchange_simplex(engine, active, p, cfg, label):
         p,terms,diag=refit_simplex(engine,active,p,cfg,label)
         value,_,terms=engine.evaluate(active,p)
         total_iterations+=diag['solver_iterations']
-        history.append({'removed':removed,'added':added,'before':before,'after':float(value)})
+        history.append({'removed':removed,'added':added,'before':before,'after':float(value),
+                        'refit':diag})
     return active,p,terms,history,total_iterations
 
 
@@ -214,8 +294,9 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
     lambdas=[float(v) for v in cfg['lambda_grid']]
     if not 1<=minf<=maxf or step<1 or not 0<floor<1 or not 0<=tol<=1 or not lambdas or any(v<0 or not torch.isfinite(torch.tensor(v)) for v in lambdas):
         raise ValueError('invalid cosine U-VaRFS budget/path')
-    numeric=[float(cfg.get('cosine_initial_step',.05)),float(cfg.get('tol',1e-5)),float(cfg.get('support_exchange_min_improvement',1e-8))]
-    if (not torch.isfinite(torch.tensor(numeric)).all() or numeric[1]<=0 or numeric[2]<0 or
+    numeric=[float(cfg.get('cosine_initial_step',.05)),float(cfg.get('tol',1e-5)),float(cfg.get('support_exchange_min_improvement',1e-8)),float(cfg.get('cosine_polish_ftol',1e-12))]
+    if (not torch.isfinite(torch.tensor(numeric)).all() or numeric[1]<=0 or numeric[2]<0 or numeric[3]<=0 or
+        int(cfg.get('cosine_polish_max_iter',200))<0 or
         int(cfg.get('cosine_refit_max_iter',cfg.get('max_iter',2000)))<1 or
         int(cfg.get('cosine_line_search_steps',20))<1 or float(cfg.get('cosine_initial_step',.05))<=0 or
         int(cfg.get('cosine_exchange_max_steps',cfg.get('support_exchange_max_steps',8)))<0 or
@@ -248,7 +329,9 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
             'relative_change':diag['relative_change'],'relative_change_scope':'initial_refit_before_exchange',
             'simplex_residual':float((p.double().sum()-1).abs()),
             'minimum_relative_weight':float(p.min()),'effective_weight_dimension':float(1/p.double().square().sum()),
-            'zero_norm_rows':0,'refit_descent_history':diag['descent_history'],'exchange_history':exchanges})
+            'zero_norm_rows':0,'refit_descent_history':diag['descent_history'],
+            'initial_refit':{k:v for k,v in diag.items() if k not in {'descent_history','relative_change'}},
+            'exchange_history':exchanges})
         print(f'[{label}] candidate={len(pool)-1} start={source} K={len(active)} '
               f'cosine_error={terms["geometry_error"]:.4f} base_loss={float(value):.6g}',flush=True)
         return active,p
@@ -297,7 +380,7 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
     path=[]
     for lam in lambdas:
         best=min(pool,key=lambda c:(c['base_objective']+lam*c['retained_features'],c['retained_features'],c['geometry_error'],c['candidate_id']))
-        path.append({k:v for k,v in best.items() if k not in {'weights','active','refit_descent_history','exchange_history'}})
+        path.append({k:v for k,v in best.items() if k not in {'weights','active','refit_descent_history','initial_refit','exchange_history'}})
         path[-1].update(lambda_value=lam,**{'lambda':lam},sparsity_term=lam*best['retained_features'],
             objective=best['base_objective']+lam*best['retained_features'],
             feasible=best['geometry_error']<=tol and best['nonzero_features']>=minf,
@@ -305,6 +388,8 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
     feasible=[point for point in path if point['feasible']]
     point=min(feasible,key=lambda c:(c['retained_features'],c['geometry_error'])) if feasible else min(path,key=lambda c:c['geometry_error'])
     chosen=pool[point['candidate_id']]; weights=chosen['weights']; active=chosen['active']
+    refits=[c['initial_refit'] for c in pool]+[e['refit'] for c in pool for e in c['exchange_history']]
+    polishes=[r['polish'] for r in refits]
     result={**point,'active':active,'weights':weights,'budgeted_weights':weights,
         'original_gram_selected_dimension':len(gram_control['active']),
         'original_gram_selected_active':exact.cpu().tolist(),
@@ -314,13 +399,23 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
         'objective_certificate_scope':'fixed_support_first_order_only_nonconvex',
         'lambda_optimization_scope':'finite_generated_candidate_pool',
         'global_optimality_claimed':False,'projected_residual':point['fixed_support_first_order_residual'],
-        'solver_iterations':total_iterations,'fit_seconds':time.time()-t0,'solver_matmul_precision':'highest',
+        'solver_iterations':total_iterations,
+        'polish_summary':{'attempts':sum(d['attempted'] for d in polishes),
+            'accepted':sum(d['accepted'] for d in polishes),
+            'iterations':sum(d['iterations'] for d in polishes),
+            'objective_evaluations':sum(d['objective_evaluations'] for d in polishes),
+            'seconds':sum(d['seconds'] for d in polishes)},
+        'fit_seconds':time.time()-t0,'solver_matmul_precision':'highest',
         'selection_reason':'sparsest_feasible' if point['feasible'] else 'minimum_geometry_error_fallback',
         'lambda_at_grid_boundary':point['lambda'] in (min(lambdas),max(lambdas)),
         'solver_manifest':{'support_sizes':sizes,'initializations':['original_gram_selected','original_gram','normal_energy'],
             'invalid_zero_row_candidates':invalid_zero_rows,
             'weight_floor_mass':floor,'geometry_rows':len(x),'geometry_chunk':engine.chunk,
             'objective_evaluations':engine.evaluations,'refit_max_iter':int(cfg.get('cosine_refit_max_iter',cfg.get('max_iter',2000))),
+            'polish_method':'slsqp_fixed_support',
+            'polish_max_iter':int(cfg.get('cosine_polish_max_iter',200)),
+            'polish_ftol':float(cfg.get('cosine_polish_ftol',1e-12)),
+            'polish_acceptance':'projected_endpoint_strict_same_objective_descent',
             'line_search_steps':int(cfg.get('cosine_line_search_steps',20)),
             'initial_step':float(cfg.get('cosine_initial_step',.05)),
             'tolerance':float(cfg.get('tol',1e-5)),

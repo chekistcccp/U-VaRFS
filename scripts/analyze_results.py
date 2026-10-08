@@ -155,6 +155,29 @@ def audit_sparse_path(result, cfg):
             'selection_and_guards_verified':True}
 
 
+def audit_cosine_refit(refit,cfg):
+    """Validate same-objective SQP guards without mistaking success for a certificate."""
+    d=refit['polish']; maximum=cfg.get('cosine_polish_max_iter',200)
+    numeric=['before','after','residual_before','residual_after','seconds']
+    if (d['method']!='slsqp_fixed_support' or not np.isfinite([d[k] for k in numeric]).all() or
+        any(d[k]<0 for k in numeric) or not 0<=d['iterations']<=maximum or
+        d['objective_evaluations']<0 or not 0<=refit['projected_refit_iterations']<=cfg.get('cosine_refit_max_iter',cfg['max_iter']) or
+        refit['solver_iterations']!=refit['projected_refit_iterations']+d['iterations']):
+        raise ValueError('cosine polish diagnostics/budget are invalid')
+    if (d['accepted'] and (not d['attempted'] or d['after']>=d['before'] or d['termination']!='strict_objective_descent') or
+        not d['accepted'] and d['after']!=d['before'] or
+        not d['attempted'] and (d['iterations']!=0 or d['objective_evaluations']!=0 or d['optimizer_success'] is not None) or
+        d['attempted'] and (not isinstance(d['optimizer_success'],bool) or d['optimizer_status'] is None or maximum==0)):
+        raise ValueError('cosine polish acceptance is not strict same-objective descent')
+    if (not np.isclose(refit['fixed_support_first_order_residual'],d['residual_after'],atol=1e-12) or
+        refit['fixed_support_converged']!=(d['residual_after']<=cfg['tol'])):
+        raise ValueError('cosine polish convergence must use actual residual')
+    if any(not np.isfinite([step['before'],step['after']]).all() or step['after']>=step['before']
+           for step in refit.get('descent_history',[])):
+        raise ValueError('cosine polish refit history is not descent')
+    return d
+
+
 def audit_cosine_path(result,cfg):
     """Check the finite-pool/new-metric selection; no old convex certificate."""
     if (result.get('geometry_metric')!='actual_cosine_gram_relative_frobenius' or
@@ -183,6 +206,15 @@ def audit_cosine_path(result,cfg):
         manifest['exchange_min_improvement']!=cfg.get('support_exchange_min_improvement',1e-8) or
         manifest['zero_row_rule']!='candidate invalid; never normalized with epsilon'):
         raise ValueError('cosine solver manifest differs from preset constraints')
+    polished='polish_method' in manifest
+    if any(k in cfg for k in ['cosine_polish_max_iter','cosine_polish_ftol']) and not polished:
+        raise ValueError('cosine polish manifest is missing')
+    if polished and (manifest['polish_method']!='slsqp_fixed_support' or
+        manifest['polish_max_iter']!=cfg.get('cosine_polish_max_iter',200) or
+        manifest['polish_ftol']!=cfg.get('cosine_polish_ftol',1e-12) or
+        manifest['polish_acceptance']!='projected_endpoint_strict_same_objective_descent'):
+        raise ValueError('cosine polish manifest differs from preset constraints')
+    polishes=[]; iterations=0
     for index,candidate in enumerate(pool):
         weights=np.asarray(candidate['weights'],dtype=float); active=np.asarray(candidate['active'],dtype=int)
         if (weights.shape!=(dimension,) or not np.isfinite(weights).all() or (weights<0).any() or
@@ -211,6 +243,22 @@ def audit_cosine_path(result,cfg):
         for history in [candidate['refit_descent_history'],candidate['exchange_history']]:
             if any(not np.isfinite([p['before'],p['after']]).all() or p['after']>=p['before'] for p in history):
                 raise ValueError('cosine accepted search step is not descent')
+        if polished:
+            refits=[candidate['initial_refit']]+[e['refit'] for e in candidate['exchange_history']]
+            for refit in refits:
+                polishes.append(audit_cosine_refit(refit,cfg))
+                iterations+=refit['solver_iterations']
+            final=refits[-1]
+            if (not np.isclose(candidate['base_objective'],final['polish']['after'],atol=1e-9) or
+                not np.isclose(candidate['fixed_support_first_order_residual'],final['polish']['residual_after'],atol=1e-10)):
+                raise ValueError('cosine candidate disagrees with its final polished refit')
+    if polished:
+        expected={'attempts':sum(d['attempted'] for d in polishes),'accepted':sum(d['accepted'] for d in polishes),
+                  'iterations':sum(d['iterations'] for d in polishes),
+                  'objective_evaluations':sum(d['objective_evaluations'] for d in polishes),
+                  'seconds':sum(d['seconds'] for d in polishes)}
+        if result['solver_iterations']!=iterations or any((not np.isclose(result['polish_summary'][k],v,atol=1e-10,rtol=1e-12) if k=='seconds' else result['polish_summary'][k]!=v) for k,v in expected.items()):
+            raise ValueError('cosine polish totals omit candidate/exchange work')
     for point in path:
         lam=point['lambda']
         best=min(pool,key=lambda c:(c['base_objective']+lam*c['retained_features'],c['retained_features'],c['geometry_error'],c['candidate_id']))
@@ -240,7 +288,7 @@ def audit_cosine_path(result,cfg):
     np.testing.assert_allclose(np.square(result['scales']),np.asarray(chosen['weights'])[chosen['active']],rtol=1e-6,atol=1e-9)
     return {'points':len(path),'candidate_pool_size':len(pool),'selected_nonzero_features':selected['nonzero_features'],
             'objective_definition':COSINE,'certificate_scope':result['objective_certificate_scope'],
-            'selection_and_guards_verified':True,'global_optimality_claimed':False}
+            'selection_and_guards_verified':True,'polish_guards_verified':polished,'global_optimality_claimed':False}
 
 
 def audit_representation_protocol(folder, cfg, frame, primary_fit):
