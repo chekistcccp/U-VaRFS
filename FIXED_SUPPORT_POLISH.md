@@ -1,5 +1,7 @@
 # v14：保持原目标的固定支持数值精修
 
+本文保留 v14 精修开发记录。当前 v15 继续同一主目标并修正有限删维提案，现行版本与求解边界见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)。
+
 项目继续为 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS 的无异常标签医学异常检测研究**。Main 仍用第 5.4/37 节已批准的 cosine/simplex/cardinality 目标及 raw 输入；L2 为完整消融。实验版本为 `gpu-eval-v14-fixed-support-polish`，独立目录为 `results/gpu-eval-v14-fixed-support-polish/`。
 
 本轮回传结果及科学结论仅存本地 `reports/`；本文件仅记录工程实现与运行协议。数值目标下降不等于异常检测指标提高，也不等于全局最优。

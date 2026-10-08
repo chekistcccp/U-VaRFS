@@ -178,6 +178,79 @@ def audit_cosine_refit(refit,cfg):
     return d
 
 
+def audit_cosine_pruning(result,cfg):
+    """Validate actual joint proposal guards and all finite-deletion work."""
+    manifest=result['solver_manifest']; strategy=cfg.get('cosine_pruning_strategy','gradient_direction')
+    if (manifest['pruning_strategy']!=strategy or strategy not in {'gradient_direction','exact_objective_deletion'} or
+        manifest['pruning_scope']!='one_coordinate_finite_deletion_proposal_then_joint_objective_guard' or
+        manifest['pruning_acceptance']!='strict_same_objective_improvement_over_legacy_proposal'):
+        raise ValueError('cosine pruning manifest differs from preset constraints')
+    pool=result['candidate_pool']; events=result['pruning_events']; dimension=len(result['weights'])
+    used=[]
+    for index,e in enumerate(events):
+        parent=e['parent_candidate_id']
+        if not 0<=parent<len(pool) or e['event_id']!=index:
+            raise ValueError('cosine pruning parent/event is invalid')
+        before=pool[parent]
+        if (e['strategy']!=strategy or e['source']!=before['source'] or e['source'] not in ['original_gram','normal_energy'] or
+            e['source_features']!=before['retained_features'] or not 1<=e['target_features']<e['source_features'] or
+            e['target_features'] not in manifest['support_sizes'] or
+            not np.array_equal(e['active_before'],before['active']) or
+            not np.isclose(e['base_objective_before'],before['base_objective'],atol=1e-9,rtol=1e-8) or
+            not np.isclose(e['geometry_before'],before['geometry_error'],atol=1e-9,rtol=1e-8) or
+            not np.isfinite([e['seconds'],e['first_order_score_span'],e['fixed_support_first_order_residual']]).all() or
+            min(e['seconds'],e['first_order_score_span'],e['fixed_support_first_order_residual'],e['objective_evaluations'])<0):
+            raise ValueError('cosine pruning source/cost disagrees')
+        deletions=e['finite_deletions']
+        if strategy=='exact_objective_deletion':
+            if [d['removed_feature'] for d in deletions]!=list(e['active_before']):
+                raise ValueError('cosine finite deletions omit active coordinates')
+        elif deletions or e['exact_proposal'] is not None:
+            raise ValueError('legacy cosine pruning unexpectedly used finite deletions')
+        for d in deletions:
+            if d['remaining_features']!=e['source_features']-1:
+                raise ValueError('cosine deletion changes the wrong support size')
+            if d['valid']:
+                if (not np.isfinite([d['base_objective'],d['loss_delta'],d['geometry_error']]).all() or
+                    min(d['base_objective'],d['geometry_error'])<0 or
+                    not np.isclose(d['loss_delta'],d['base_objective']-e['base_objective_before'],atol=1e-9,rtol=1e-8)):
+                    raise ValueError('cosine finite deletion loss disagrees')
+            elif any(d[k] is not None for k in ['base_objective','loss_delta','geometry_error']):
+                raise ValueError('invalid zero-row deletion has numeric loss')
+        old=e['legacy_proposal']; exact=e['exact_proposal']
+        for proposal in [old,exact]:
+            if proposal is not None:
+                active=np.asarray(proposal['active'])
+                if (len(active)!=e['target_features'] or len(set(active.tolist()))!=len(active) or
+                    (active<0).any() or (active>=dimension).any() or
+                    not np.isfinite([proposal['base_objective'],proposal['geometry_error']]).all() or
+                    min(proposal['base_objective'],proposal['geometry_error'])<0):
+                    raise ValueError('cosine joint pruning proposal is invalid')
+        accepted=exact is not None and (old is None or exact['base_objective']<old['base_objective'])
+        chosen=exact if accepted else old
+        name='exact_objective_deletion' if accepted else 'gradient_direction' if old is not None else 'invalid'
+        if (e['exact_proposal_accepted']!=accepted or e['selected_proposal']!=name or
+            e['selected_initial_objective']!=(None if chosen is None else chosen['base_objective']) or
+            e['selected_initial_geometry']!=(None if chosen is None else chosen['geometry_error'])):
+            raise ValueError('cosine pruning violates its joint objective guard')
+    for c in pool:
+        event=c.get('pruning_event_id')
+        if event is None: continue
+        if not 0<=event<len(events) or event in used:
+            raise ValueError('cosine pruning candidate/event link is invalid')
+        used.append(event);e=events[event]
+        if (e['parent_candidate_id']>=c['candidate_id'] or e['source']!=c['source'] or
+            e['target_features']!=c['retained_features'] or e['selected_initial_objective'] is None or
+            c['base_objective']>e['selected_initial_objective']+1e-8):
+            raise ValueError('cosine pruned candidate increases its guarded initial objective')
+    if set(used)!={i for i,e in enumerate(events) if e['selected_proposal']!='invalid'}:
+        raise ValueError('cosine pruning events/candidate links are incomplete')
+    expected={'events':len(events),'exact_proposals_accepted':sum(e['exact_proposal_accepted'] for e in events),
+              'objective_evaluations':sum(e['objective_evaluations'] for e in events),'seconds':sum(e['seconds'] for e in events)}
+    if any((not np.isclose(result['pruning_summary'][k],v,atol=1e-10,rtol=1e-12) if k=='seconds' else result['pruning_summary'][k]!=v) for k,v in expected.items()):
+        raise ValueError('cosine pruning totals omit scoring/proposal work')
+
+
 def audit_cosine_path(result,cfg):
     """Check the finite-pool/new-metric selection; no old convex certificate."""
     if (result.get('geometry_metric')!='actual_cosine_gram_relative_frobenius' or
@@ -214,6 +287,11 @@ def audit_cosine_path(result,cfg):
         manifest['polish_ftol']!=cfg.get('cosine_polish_ftol',1e-12) or
         manifest['polish_acceptance']!='projected_endpoint_strict_same_objective_descent'):
         raise ValueError('cosine polish manifest differs from preset constraints')
+    pruned='pruning_strategy' in manifest
+    if 'cosine_pruning_strategy' in cfg and not pruned:
+        raise ValueError('cosine pruning manifest is missing')
+    if pruned:
+        audit_cosine_pruning(result,cfg)
     polishes=[]; iterations=0
     for index,candidate in enumerate(pool):
         weights=np.asarray(candidate['weights'],dtype=float); active=np.asarray(candidate['active'],dtype=int)
@@ -288,7 +366,7 @@ def audit_cosine_path(result,cfg):
     np.testing.assert_allclose(np.square(result['scales']),np.asarray(chosen['weights'])[chosen['active']],rtol=1e-6,atol=1e-9)
     return {'points':len(path),'candidate_pool_size':len(pool),'selected_nonzero_features':selected['nonzero_features'],
             'objective_definition':COSINE,'certificate_scope':result['objective_certificate_scope'],
-            'selection_and_guards_verified':True,'polish_guards_verified':polished,'global_optimality_claimed':False}
+            'selection_and_guards_verified':True,'polish_guards_verified':polished,'pruning_guards_verified':pruned,'global_optimality_claimed':False}
 
 
 def audit_representation_protocol(folder, cfg, frame, primary_fit):

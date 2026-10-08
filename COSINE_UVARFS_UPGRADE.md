@@ -1,6 +1,6 @@
 # v12：已批准的 cosine/simplex U-VaRFS
 
-本文保留 v12 目标升级开发记录。当前 v14 在同一目标内加入固定支持数值精修，现行 solver 与版本规则见 [FIXED_SUPPORT_POLISH.md](FIXED_SUPPORT_POLISH.md)。
+本文保留 v12 目标升级开发记录。v14 在同一目标内加入固定支持数值精修；当前 v15 修正有限删维提案，现行 solver 与版本规则见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)。
 
 用户明确批准：**“批准设计的改进，修改对应代码并同步到仓库”**。此前 [目标提案](UV_COSINE_OBJECTIVE_PROPOSAL.md) 的待批准状态由本授权取代。本版本实际接入新的主目标，不能称为原公式的等价工程优化。
 

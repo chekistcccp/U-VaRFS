@@ -247,6 +247,78 @@ def covering_support(x, ranking, count):
     return torch.tensor(sorted(chosen),device=x.device,dtype=torch.long)
 
 
+def prune_cosine_support(engine, active, p, count, cfg, label):
+    """Compare finite deletions on the same normal objective, with a legacy guard.
+
+    The tangent first-order deletion score vanishes at interior stationary
+    simplex solutions. Finite deletions distinguish coordinates there. Ranking
+    single deletions is still a heuristic for a MULTI-coordinate reduction:
+    evaluate both complete proposed supports, including the new simplex floor,
+    and use the exact-ranked proposal only when its actual objective is lower.
+    """
+    strategy=cfg.get('cosine_pruning_strategy','gradient_direction')
+    if strategy not in {'gradient_direction','exact_objective_deletion'} or not 1<=count<len(active):
+        raise ValueError('invalid cosine pruning strategy or count')
+    started=time.perf_counter(); evaluations=engine.evaluations
+    floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
+    value,g,terms=engine.evaluate(active,p,True)
+    legacy=p/((1-p).clamp_min(1e-12))*((g*p).sum()-g)
+    full=torch.zeros(engine.x.shape[1],device=p.device,dtype=p.dtype); full[active]=p
+    def proposal(scores):
+        priority=torch.full_like(full,-torch.inf); priority[active]=scores
+        ranking=priority.argsort(descending=True,stable=True)
+        chosen=covering_support(engine.x,ranking,count)
+        if chosen is None:
+            return None
+        weights=full[chosen]
+        weights=project_simplex(weights/weights.sum(),floor) if weights.sum()>0 else project_simplex(torch.ones_like(weights)/count,floor)
+        try:
+            loss,_,point=engine.evaluate(chosen,weights)
+        except ValueError:
+            return None
+        return chosen,weights,float(loss),point['geometry_error']
+    old=proposal(legacy); exact=None; deletion_points=[]
+    if strategy=='exact_objective_deletion':
+        scores=torch.empty_like(p)
+        last_log=started
+        for j in range(len(active)):
+            keep=torch.arange(len(active),device=p.device)!=j
+            weights=project_simplex(p[keep]/p[keep].sum(),floor)
+            record={'removed_feature':int(active[j]),'remaining_features':len(active)-1}
+            try:
+                loss,_,point=engine.evaluate(active[keep],weights)
+                scores[j]=loss-value
+                record.update(valid=True,base_objective=float(loss),
+                              loss_delta=float(loss-value),geometry_error=point['geometry_error'])
+            except ValueError:
+                # A deletion that loses a normal row's coverage must be retained.
+                scores[j]=torch.inf
+                record.update(valid=False,base_objective=None,loss_delta=None,geometry_error=None)
+            deletion_points.append(record)
+            now=time.perf_counter()
+            if now-last_log>=30:
+                print(f'[{label}] cosine-deletion {j+1}/{len(active)} elapsed={now-started:.1f}s',flush=True)
+                last_log=now
+        exact=proposal(scores)
+    accepted=exact is not None and (old is None or exact[2]<old[2])
+    chosen=exact if accepted else old
+    diag={'strategy':strategy,'source_features':len(active),'target_features':count,
+          'active_before':active.cpu().tolist(),'base_objective_before':float(value),
+          'geometry_before':terms['geometry_error'],
+          'first_order_score_span':float(legacy.max()-legacy.min()),
+          'fixed_support_first_order_residual':float((p-project_simplex(p-g,floor)).norm()),
+          'finite_deletions':deletion_points,'exact_proposal_accepted':accepted,
+          'legacy_proposal':None if old is None else {'active':old[0].cpu().tolist(),'base_objective':old[2],'geometry_error':old[3]},
+          'exact_proposal':None if exact is None else {'active':exact[0].cpu().tolist(),'base_objective':exact[2],'geometry_error':exact[3]},
+          'selected_proposal':'exact_objective_deletion' if accepted else 'gradient_direction' if old is not None else 'invalid',
+          'selected_initial_objective':None if chosen is None else chosen[2],
+          'selected_initial_geometry':None if chosen is None else chosen[3],
+          'objective_evaluations':engine.evaluations-evaluations,'seconds':time.perf_counter()-started}
+    print(f'[{label}] cosine-prune {len(active)}->{count} proposal={diag["selected_proposal"]} '
+          f'initial_loss={diag["selected_initial_objective"]} elapsed={diag["seconds"]:.1f}s',flush=True)
+    return (None,None,diag) if chosen is None else (chosen[0],chosen[1],diag)
+
+
 def exchange_simplex(engine, active, p, cfg, label):
     maximum=int(cfg.get('cosine_exchange_max_steps',cfg.get('support_exchange_max_steps',8)))
     proposals=int(cfg.get('cosine_exchange_candidates',8))
@@ -302,6 +374,9 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
         int(cfg.get('cosine_exchange_max_steps',cfg.get('support_exchange_max_steps',8)))<0 or
         int(cfg.get('cosine_exchange_candidates',8))<1):
         raise ValueError('invalid cosine solver limits')
+    pruning_strategy=cfg.get('cosine_pruning_strategy','gradient_direction')
+    if pruning_strategy not in {'gradient_direction','exact_objective_deletion'}:
+        raise ValueError('invalid cosine pruning strategy')
     engine=CosineObjective(x,variability,float(cfg.get('beta',.002)),int(cfg.get('cosine_geometry_chunk',512)))
     old=torch.as_tensor(gram_control['budgeted_weights'],device=x.device,dtype=engine.x.dtype)
     if old.shape!=(m,) or not torch.isfinite(old).all() or (old<0).any():
@@ -309,9 +384,9 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
     sizes=sorted(set(range(minf,maxf+1,step))|{maxf,min(maxf,max(minf,len(gram_control['active'])))},reverse=True)
     starts=[('original_gram',old.argsort(descending=True,stable=True),old),
             ('normal_energy',engine.x.square().sum(0).argsort(descending=True,stable=True),torch.ones_like(old))]
-    pool=[]; total_iterations=0; invalid_zero_rows=0
+    pool=[]; total_iterations=0; invalid_zero_rows=0; pruning_events=[]
 
-    def optimize_candidate(active,p,source):
+    def optimize_candidate(active,p,source,pruning_event_id=None):
         nonlocal total_iterations
         count=len(active)
         p,terms,diag=refit_simplex(engine,active,p,cfg,f'{label}:{source}:K{count}')
@@ -321,7 +396,7 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
         value,g,terms=engine.evaluate(active,p,True)
         residual=float((p-project_simplex(p-g,floor)).norm())
         weights=torch.zeros_like(old); weights[active]=p
-        pool.append({'candidate_id':len(pool),'source':source,'retained_features':len(active),
+        pool.append({'candidate_id':len(pool),'source':source,'pruning_event_id':pruning_event_id,'retained_features':len(active),
             'nonzero_features':int((p>0).sum()),'active':active.cpu().numpy(),
             'weights':weights.cpu().numpy(),'base_objective':float(value),**terms,
             'fixed_support_first_order_residual':residual,'fixed_support_converged':residual<=float(cfg.get('tol',1e-5)),
@@ -362,18 +437,15 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
                 if initial[active].sum()>0:
                     p=project_simplex(initial[active]/initial[active].sum(),floor)
             elif len(active)>count:
-                _,g,_=engine.evaluate(active,p,True)
-                deletion=p/((1-p).clamp_min(1e-12))*((g*p).sum()-g)
-                priority=torch.full((m,),-torch.inf,device=p.device,dtype=p.dtype)
-                priority[active]=deletion
-                ranking=priority.argsort(descending=True,stable=True)
-                old_full=torch.zeros_like(old); old_full[active]=p
-                active=covering_support(engine.x,ranking,count)
+                parent=len(pool)-1
+                active,p,pruning=prune_cosine_support(engine,active,p,count,cfg,f'{label}:{source}:prune')
+                pruning.update(event_id=len(pruning_events),parent_candidate_id=parent,source=source)
+                pruning_events.append(pruning)
                 if active is None:
                     invalid_zero_rows+=1
                     continue
-                weights=old_full[active]
-                p=project_simplex(weights/weights.sum(),floor) if weights.sum()>0 else project_simplex(torch.ones(count,device=x.device,dtype=old.dtype)/count,floor)
+                active,p=optimize_candidate(active,p,source,pruning['event_id'])
+                continue
             active,p=optimize_candidate(active,p,source)
     if not pool:
         raise RuntimeError('No valid cosine U-VaRFS candidate: generated supports contain zero rows; no detector fallback was used')
@@ -394,6 +466,11 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
         'original_gram_selected_dimension':len(gram_control['active']),
         'original_gram_selected_active':exact.cpu().tolist(),
         'scales':weights[active]**.5,'lambda_path':path,'candidate_pool':pool,
+        'pruning_events':pruning_events,
+        'pruning_summary':{'events':len(pruning_events),
+            'exact_proposals_accepted':sum(e['exact_proposal_accepted'] for e in pruning_events),
+            'objective_evaluations':sum(e['objective_evaluations'] for e in pruning_events),
+            'seconds':sum(e['seconds'] for e in pruning_events)},
         'objective_definition':OBJECTIVE,'geometry_metric':'actual_cosine_gram_relative_frobenius',
         'sparsity_strategy':'cosine_simplex_support_search',
         'objective_certificate_scope':'fixed_support_first_order_only_nonconvex',
@@ -412,6 +489,9 @@ def fit_cosine_uvarfs(x, variability, cfg, gram_control, label='uvarfs:cosine'):
             'invalid_zero_row_candidates':invalid_zero_rows,
             'weight_floor_mass':floor,'geometry_rows':len(x),'geometry_chunk':engine.chunk,
             'objective_evaluations':engine.evaluations,'refit_max_iter':int(cfg.get('cosine_refit_max_iter',cfg.get('max_iter',2000))),
+            'pruning_strategy':pruning_strategy,
+            'pruning_scope':'one_coordinate_finite_deletion_proposal_then_joint_objective_guard',
+            'pruning_acceptance':'strict_same_objective_improvement_over_legacy_proposal',
             'polish_method':'slsqp_fixed_support',
             'polish_max_iter':int(cfg.get('cosine_polish_max_iter',200)),
             'polish_ftol':float(cfg.get('cosine_polish_ftol',1e-12)),

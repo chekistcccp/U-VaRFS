@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前工程状态见第 39 节（v14 固定支持数值精修）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
+> **当前工程状态见第 40 节（v15 有限删维求解修正）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
 
 ---
 
@@ -829,7 +829,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v14-fixed-support-polish
+gpu-eval-v15-objective-deletion-pruning
 ```
 
 原因：
@@ -947,7 +947,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v14-fixed-support-polish
+experiment_version = gpu-eval-v15-objective-deletion-pruning
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1394,7 +1394,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 39. 2026-10-08 v14 固定支持数值精修（当前工程状态）
+# 39. 2026-10-08 v14 固定支持数值精修（历史工程交接）
 
 版本 `gpu-eval-v14-fixed-support-polish`；独立输出 `results/gpu-eval-v14-fixed-support-polish/`。当前 Main 仍为第 5.4/37 节已批准的 cosine/simplex/cardinality U-VaRFS 与 raw 输入，完整开发与第 19 节检查见 [FIXED_SUPPORT_POLISH.md](FIXED_SUPPORT_POLISH.md)。回传指标、分析与图表依第 28 节仅留本地，不写入本开发交接。
 
@@ -1406,3 +1406,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 本地验证数学、CPU/I/O、完整控制与断点；真实 BMAD、模型和 CUDA 缺失。服务器先 Liver 验证运行/成本，再固定设计全六；不得按 Liver test 指标调参。代码检查完成后沿 main 提交推送，结果默认仅留本地。
 
 本轮完整回归：140 passed，5 skipped（本机无 CUDA）；两个输入 primary 的 152 方法、独立原 quadratic 控制、数学/端点/残差/成本保护、评价与 resume 通过。旧 v12 完整回传的 24 个主分支审计重新通过，748 个原文件 SHA256 保持；loss/投影/coverage AST、ASLS/原 solver/fit/eval/backbone/detector 代码及除新增数值设置/版本目录外全部配置对照保持。shell/diff 检查通过；真实服务器的 v14 异常检测性能尚未验证。
+
+
+---
+
+# 40. 2026-10-09 v15 有限删维求解修正（当前工程状态）
+
+版本 `gpu-eval-v15-objective-deletion-pruning`，独立输出 `results/gpu-eval-v15-objective-deletion-pruning/`。Main 仍为第 5.4/37 节已批准的 cosine/simplex/cardinality 目标与 raw 输入；详细实现与第 19 节检查见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)。回传指标、分析、图表按第 28 节仅留本地，不写入本开发交接。
+
+- 原一阶删除方向在 simplex 内点驻点全部趋零，无法区分有限删维代价；floor 边界不保证全部为零。正常独立数学探针复现了该退化，不将其声明为所有真实性能变化的唯一原因。
+- 默认 `cosine_pruning_strategy: exact_objective_deletion`；对每个单维删除用新 K−1 的 simplex/floor 重新投影，按相同完整 normal cosine/variability 目标计算实际删除 loss，再提出原预设 K 的较小支持。没有新 loss、异常数据或几何子采样。
+- 同时保留旧一阶提案，对完整目标 K 的新旧初始化实际评价，严格低于旧提案才接受，否则回用旧提案；零行候选无效。正常联合删维反例说明单维排名并不证明多维删除最优，guard 只保护初始化的同目标比较，不保证最终非凸解或 test 性能。
+- 记录全部 pruning events、parent/child candidate ID、每个删除的有效性/实际 loss、两提案/guard、评分次数与耗时；全部成本写入 summary/fit time。逐个候选重用 normal Gram，服务器须核验增加的实际计算成本。旧 `gradient_direction` 可显式用作正常求解控制，不根据 test 自动选策略。
+- 原 CosineObjective/解析梯度、投影/floor、SLSQP 精修、refit/交换、候选 K、lambda 有限池选择/实际几何容差、ASLS、Frozen backbone、raw Main/L2 消融、四支 152 方法/五 seeds、正常 fit/variability/memory/维度预算、beta/lambda、detector/Top-1%/pixel 定义保持。原 quadratic/v11 与同维 PCA/Random 保留完整。
+- v15 独立目录与新指纹，不覆盖、混合或续接旧结果。分析兼容 v12/v14 无新字段记录，新配置缺 manifest 拒绝；v13 评价收尾与版本保护继续保留。
+- 149 项完整本地检查通过，6 CUDA 检查因缺 runtime 跳过；两种 primary 的 152 方法与同数据原控制、有限删除 oracle、联合 guard/floor/zero-row/成本/父子链接/历史审计通过。v12/v14 48 个主分支复核通过，748/753 个原文件保持。本机缺真实 BMAD/模型/CUDA；真实 v15 性能待服务器先 Liver、再固定设计全六。

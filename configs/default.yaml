@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v14-fixed-support-polish
+results_dir: results/gpu-eval-v15-objective-deletion-pruning
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -47,6 +47,8 @@ uvarfs:
   ablation_objective: quadratic_gram
   sparsity_strategy: objective_forward_refit
   cosine_support_step: 32
+  # Same-objective finite deletions avoid vanishing first-order scores at stationarity.
+  cosine_pruning_strategy: exact_objective_deletion
   cosine_weight_floor_mass: 0.0001
   cosine_geometry_chunk: 512
   cosine_refit_max_iter: 2000
