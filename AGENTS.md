@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前工程状态见第 42 节（v17 性能优先）**。用户于 2026-10-09 明确将更强检测性能置于更强压缩之前；当前 Main 见第 5.5/42 节的固定预算、capped cosine/simplex U-VaRFS。第 5.4/37 节旧 cosine 压缩策略作为 `asls_compression_uvarfs` 保留，第 5.2 节原公式继续完整 `gram_*` 控制。raw Main 固定、L2 消融保留；不按 test 选择主输入。
+> **当前工程状态见第 43 节（v18 固定预算交换后重拟合）**。用户于 2026-10-09 明确将更强检测性能置于更强压缩之前；当前 Main 见第 5.5/43 节的固定预算、capped cosine/simplex U-VaRFS。第 5.4/37 节旧 cosine 压缩策略作为 `asls_compression_uvarfs` 保留，第 5.2 节原公式继续完整 `gram_*` 控制。raw Main 固定、L2 消融保留；不按 test 选择主输入。
 
 ---
 
@@ -455,6 +455,8 @@ Main `objective: cosine_simplex_fixed_budget`。保持正常 cosine 表示损失
 
 在实际正常 cosine error<=0.05 的固定预算生成候选中选正常表示/稳定性目标最小点；无可行候选时仍明确 infeasible fallback，不声明全局最优。保留每起点 uniform reference，使用 capped 投影/SLSQP/refit/交换，固定支持残差按新约束计算。有效权重维数>=K/4，仅限制系数集中，不是 AD 性能保证。
 
+v18保持本节目标与约束，只扩大同目标固定K支持求解：交换提案先重拟合后判断，保护已有正常几何可行状态并保留完整v17候选/控制；详见第43节与 [REFITTED_SUPPORT_EXCHANGE.md](REFITTED_SUPPORT_EXCHANGE.md)。
+
 这是依据用户当前要求的明确方法/选择约束调整，不是等价提速；精确目标、比较与边界见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)。原 cosine/cardinality 完整 Main 控制及 quadratic 全分支保留。ASLS、Frozen backbone、raw 主输入、正常数据/维度上限/memory预算、detector、六数据集与无异常标签约束保持。
 
 ---
@@ -839,7 +841,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v17-performance-first
+gpu-eval-v18-refitted-support-exchange
 ```
 
 原因：
@@ -957,7 +959,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v17-performance-first
+experiment_version = gpu-eval-v18-refitted-support-exchange
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1168,7 +1170,7 @@ Codex 接手后优先级：
    - ASLS 有日志；
    - cosine/refit、候选 feasible/残差/有效维数和原 batched FISTA 控制有日志；
    - PCA GPU fit 有日志；
-   - 四支正常 manifest、160 方法与 memory/test 正常；
+   - 四支正常 manifest、164 方法与 memory/test 正常；
 5. Liver 完成后再全 6 benchmark；
 6. 再考虑双 3090 dataset-level parallel runner；
 7. 结果稳定后补缺失 baseline 与论文图表。
@@ -1463,3 +1465,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 新版本与新指纹，resume 须有四支原文件、同支持artifact与旧 cosine 控制文件。代码/配置/测试/开发交接完成检查后提交推送，结果仅留本地。
 
 176 项完整本地检查通过，7 项 CUDA 检查因缺 runtime 跳过。独立 projection oracle、有效维数下界/集中反例、可行参考保护/明确 fallback、两种输入160方法与全部同维/共享协议、报告/resume/历史回归通过。原 cosine 完整控制在两输入独立对照与上一提交权重/支持/选解完全一致；CosineObjective/原投影/pruning AST 保持，ASLS/variability/backbone/detector/evaluation源码不变。shell/diff检查通过。本机缺真实 BMAD/模型/CUDA；先服务器 Liver 验证运行，再固定全六。后续以真实检测指标判断收益，不能以压缩、低正常 loss 或数学/fixture 通过代替性能改善。
+
+
+---
+
+# 43. 2026-10-09 v18 固定预算支持交换后重拟合（当前工程状态）
+
+版本 `gpu-eval-v18-refitted-support-exchange`；新目录 `results/gpu-eval-v18-refitted-support-exchange/`。Main保持第5.5节的性能优先固定K/capped cosine目标与raw输入；具体算法、检查边界和运行见 [REFITTED_SUPPORT_EXCHANGE.md](REFITTED_SUPPORT_EXCHANGE.md)。回传成绩/分析/图表/日志依第28节仅留本地，不写入开发交接。
+
+- 旧支持交换在未重拟合初值下降前拒绝支持，正常独立小矩阵反例证明可能漏掉重拟合后更低原目标的支持。这是算法搜索缺口证据，不把它作为全部真实检测差异的唯一原因。
+- 保留完整v17池，从三个optimized端点分别做原全维梯度预设提案，每步8个、每条最多8步。每个有效固定K支持先在同一capped simplex refit/SLSQP，再比较正常完整目标；接受需严格下降且不损失父状态已有正常几何可行性。零行提案无效，拒绝的全部求解成本记录。
+- 所有v17uniform/optimized候选保留，有限池选解/明确fallback原样；新的候选不保证异常性能或离散全局最优。新增同轮 `asls_fixed_budget_uvarfs` 保存v17原求解，四支共享各输入正常缓存，默认164方法、全六984行。
+- 旧压缩cosine完整控制、original Gram全分支、五seed、同K PCA/Random、同支持去权重、ASLS、Frozen DINOv3全部层、raw Main/L2消融、normal fit/扰动/memory/表示上限和cosine1NN/Top1%/pixel协议保持。性能优先继续，不把更强压缩或低正常loss当作检测成功。
+- 新版本/目录/指纹，resume须四支v17控制文件和原文件；不覆盖/混合旧回传。完整成本包括拒绝refit/polish，不把共享整套成本当单Main成本。
+
+190项完整本地检查通过，8项CUDA检查因缺runtime跳过。正常有限交换反例、固定K/cap/严格几何保护、多步与明确fallback、零行/全支持/禁用、拒绝提案成本、篡改拒绝、两种primary下164方法fit/memory/image/pixel与完整断点通过。原v17求解函数AST保持，两输入支持/权重/scales/选解与上一提交逐项一致；ASLS、CosineObjective/原cosine完整控制、original Gram、variability/backbone/detector/evaluation源码保持。旧v17全部24主分支审计通过，801个回传原文件哈希保持；shell/diff检查通过。本机无真实BMAD/模型/CUDA；真实v18收益仍须服务器先Liver验证运行，再统一配置全六评价。

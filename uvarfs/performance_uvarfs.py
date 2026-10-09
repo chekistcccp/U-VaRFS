@@ -1,6 +1,7 @@
 """Normal-only performance-first U-VaRFS: fixed K and capped simplex.
 
-A changed feasible set/selection policy, not an equivalent speedup.
+The v17 fixed-budget definition remains; v18 extends its same-objective
+support solve with refit-before-accept exchanges.
 """
 from __future__ import annotations
 import time
@@ -36,7 +37,7 @@ def project_bounded_simplex(values, floor_mass=1e-4, cap_factor=4.):
 
 @torch.inference_mode()
 @precise_matmul()
-def fit_performance_uvarfs(x,variability,cfg,gram_control,label='uvarfs:performance'):
+def fit_fixed_budget_reference(x,variability,cfg,gram_control,label='uvarfs:performance'):
     started=time.time(); m=x.shape[1]
     count=min(int(cfg.get('max_features',256)),m); minimum=min(int(cfg.get('min_features',32)),m)
     floor=float(cfg.get('cosine_weight_floor_mass',1e-4)); cap=float(cfg.get('performance_weight_cap_factor',4.))
@@ -140,3 +141,80 @@ def fit_performance_uvarfs(x,variability,cfg,gram_control,label='uvarfs:performa
     print(f'[{label}] performance-first K={count}/{m} geometry={point["geometry_error"]:.4f} '
           f'feasible={point["feasible"]} cap={cap:g} ESS={point["effective_weight_dimension"]:.1f}',flush=True)
     return result
+
+
+@torch.inference_mode()
+@precise_matmul()
+def fit_performance_uvarfs(x,variability,cfg,gram_control,label='uvarfs:performance',reference=None):
+    """Extend the unchanged v17 pool; refit exchanged supports before rejection."""
+    from .performance_exchange import exchange_after_refit
+    strategy=cfg.get('performance_exchange_strategy','pre_refit_descent')
+    if strategy not in {'pre_refit_descent','refit_before_accept'} or int(cfg.get('performance_exchange_max_steps',8))<0 or int(cfg.get('performance_exchange_candidates',8))<1:
+        raise ValueError('invalid performance exchange strategy/limits')
+    reference=fit_fixed_budget_reference(x,variability,cfg,gram_control,label) if reference is None else reference
+    added_started=time.time()
+    if strategy=='pre_refit_descent':
+        return reference
+    engine=CosineObjective(x,variability,float(cfg.get('beta',.002)),int(cfg.get('cosine_geometry_chunk',512)))
+    cap=float(cfg.get('performance_weight_cap_factor',4.));floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
+    tolerance=float(cfg.get('geometry_tolerance',.05));count=len(reference['active'])
+    project=lambda weights,mass:project_bounded_simplex(weights,mass,cap)
+    pool=list(reference['candidate_pool']);trajectories=[];extra_refits=[]
+    for parent in reference['candidate_pool']:
+        if parent['candidate_type']!='optimized':continue
+        active=torch.as_tensor(parent['active'],device=x.device,dtype=torch.long)
+        full=torch.as_tensor(parent['weights'],device=x.device,dtype=engine.x.dtype);p=full[active]
+        active,p,trace=exchange_after_refit(engine,active,p,cfg,
+            f'{label}:{parent["source"]}:refitted',project,cap)
+        trace.update(parent_candidate_id=parent['candidate_id'],candidate_id=None)
+        trajectories.append(trace)
+        extra_refits.extend(a['refit'] for a in trace['attempts'] if a['refit'] is not None)
+        if not trace['steps']:continue
+        value,gradient,terms=engine.evaluate(active,p,True)
+        full=torch.zeros_like(full);full[active]=p
+        residual=float((p-project(p-gradient,floor)).norm())
+        trace['candidate_id']=len(pool)
+        pool.append({'candidate_id':len(pool),'parent_candidate_id':parent['candidate_id'],
+            'source':parent['source'],'candidate_type':'refitted_exchange',
+            'retained_features':count,'nonzero_features':count,
+            'active':active.cpu().numpy(),'weights':full.cpu().numpy(),
+            'base_objective':float(value),**terms,'zero_norm_rows':0,
+            'simplex_residual':float((p.double().sum()-1).abs()),
+            'minimum_relative_weight':float(p.min()),'maximum_relative_weight':float(p.max()),
+            'effective_weight_dimension':float(1/p.double().square().sum()),
+            'fixed_support_first_order_residual':residual,
+            'fixed_support_converged':residual<=float(cfg.get('tol',1e-5)),
+            'solver_status':'refitted_support_exchange_completed','relative_change':0.,
+            'relative_change_scope':'not_used_refitted_exchange',
+            'initial_refit':None,'exchange_history':[]})
+    eligible=[c for c in pool if c['geometry_error']<=tolerance]
+    chosen=min(eligible,key=lambda c:(c['base_objective'],c['geometry_error'],c['candidate_id'])) if eligible else min(pool,key=lambda c:(c['geometry_error'],c['base_objective'],c['candidate_id']))
+    point={k:v for k,v in chosen.items() if k not in {'active','weights','initial_refit','exchange_history'}}
+    point.update(**{'lambda':0.},sparsity_term=0.,objective=chosen['base_objective'],
+        feasible=bool(eligible),solver_converged=chosen['fixed_support_converged'])
+    polishes=[r['polish'] for r in extra_refits]
+    extra={'attempts':sum(d['attempted'] for d in polishes),'accepted':sum(d['accepted'] for d in polishes),
+        'iterations':sum(d['iterations'] for d in polishes),
+        'objective_evaluations':sum(d['objective_evaluations'] for d in polishes),
+        'seconds':sum(d['seconds'] for d in polishes)}
+    print(f'[{label}] refitted Main K={count} geometry={point["geometry_error"]:.4f} '
+          f'feasible={point["feasible"]} candidate={chosen["candidate_id"]} refits={len(extra_refits)}',flush=True)
+    return {**reference,**point,'active':chosen['active'],'weights':chosen['weights'],
+        'budgeted_weights':chosen['weights'],'scales':chosen['weights'][chosen['active']]**.5,
+        'candidate_pool':pool,'lambda_path':[point],
+        'projected_residual':point['fixed_support_first_order_residual'],
+        'selection_reason':'fixed_budget_best_feasible_objective' if eligible else 'minimum_geometry_error_fallback',
+        'sparsity_strategy':'fixed_budget_refitted_support_exchange',
+        'solver_iterations':reference['solver_iterations']+sum(t['solver_iterations'] for t in trajectories),
+        'fit_seconds':reference['fit_seconds']+time.time()-added_started,
+        'polish_summary':{k:reference['polish_summary'][k]+v for k,v in extra.items()},
+        'exchange_search':{'strategy':'refit_before_accept','reference_candidate_count':len(reference['candidate_pool']),
+            'reference_selected_candidate_id':reference['candidate_id'],'trajectories':trajectories,
+            'solver_iterations':sum(t['solver_iterations'] for t in trajectories),
+            'objective_evaluations':engine.evaluations,'seconds':time.time()-added_started},
+        'solver_manifest':{**reference['solver_manifest'],
+            'candidate_types':['uniform_reference','optimized','refitted_exchange'],
+            'performance_exchange_strategy':strategy,
+            'performance_exchange_max_steps':int(cfg.get('performance_exchange_max_steps',8)),
+            'performance_exchange_candidates':int(cfg.get('performance_exchange_candidates',8)),
+            'objective_evaluations':reference['solver_manifest']['objective_evaluations']+engine.evaluations}}

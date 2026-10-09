@@ -10,7 +10,7 @@ from .perturb import perturb_batch, PERTURBATIONS
 from .asls import fit_asls, reselect_asls
 from .u_varfs import fit_uvarfs
 from .cosine_uvarfs import fit_cosine_uvarfs
-from .performance_uvarfs import fit_performance_uvarfs
+from .performance_uvarfs import fit_performance_uvarfs, fit_fixed_budget_reference
 from .objectives import COSINE, QUADRATIC, PERFORMANCE, objective_modes, experiment_branches
 from .transforms import fit_pca
 from .utils import save_json
@@ -208,8 +208,14 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
             if objective in {COSINE,PERFORMANCE}:
                 x=torch.cat([patches[l] for l in layers],dim=-1)
                 v=torch.cat([variabilities[l] for l in layers],dim=1)
-                fit=fit_performance_uvarfs if objective==PERFORMANCE else fit_cosine_uvarfs
-                uv_cache[key]=fit(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:{objective}')
+                if objective==PERFORMANCE:
+                    controls=gram_cache.setdefault('fixed_budget_controls',{})
+                    if key not in controls:
+                        controls[key]=fit_fixed_budget_reference(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:v17-control')
+                    uv_cache[key]=fit_performance_uvarfs(x,v,cfg['uvarfs'],old,
+                        label=f'uvarfs:{name}:{objective}',reference=controls[key])
+                else:
+                    uv_cache[key]=fit_cosine_uvarfs(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:{objective}')
             else:
                 uv_cache[key]=old
         r=uv_cache[key]
@@ -233,6 +239,14 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         "fixed4_uvarfs": {"layers": fixed, "kind": "uvarfs", "obj": fixed_uv},
         "all_uvarfs": {"layers": all_layers, "kind": "uvarfs", "obj": all_uv},
     }
+    if 'asls_fixed_budget_uvarfs' in enabled:
+        cache=gram_cache.setdefault('fixed_budget_controls',{})
+        key=tuple(selected)
+        if key not in cache:
+            v=torch.cat([variabilities[l] for l in selected],dim=1)
+            cache[key]=fit_fixed_budget_reference(xsel,v,cfg['uvarfs'],main_gram,label='uvarfs:v17-control')
+        save_uv('asls_fixed_budget',selected,cache[key])
+        specs['asls_fixed_budget_uvarfs']={'layers':selected,'kind':'uvarfs','obj':cache[key]}
     if 'asls_compression_uvarfs' in enabled:
         cache=gram_cache.setdefault('compression_cosine_controls',{})
         key=tuple(selected)
@@ -326,7 +340,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
             v['objective_branch']=objective
             if v['kind']=='uvarfs':
                 v['uvarfs_objective']=v['obj'].get('objective_definition',QUADRATIC)
-            if k in {'main','asls_raw','asls_pca','asls_selected_raw','asls_compression_uvarfs'} or base=='asls_random':
+            if k in {'main','asls_raw','asls_pca','asls_selected_raw','asls_compression_uvarfs','asls_fixed_budget_uvarfs'} or base=='asls_random':
                 v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
     print('[fit] normal cosine geometry audit (diagnostic only)',flush=True)

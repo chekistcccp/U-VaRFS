@@ -2,6 +2,8 @@
 
 用户于 2026-10-09 明确要求：“不要使用更强的压缩，就需要更强的性能，依此为依据进行改进”。本轮依据该要求改变 Main 的 feature sparsity 取舍；不是仅增加诊断，也不是等价提速。版本 `gpu-eval-v17-performance-first`，独立目录 `results/gpu-eval-v17-performance-first/`。
 
+当前v18保持本节精确目标/约束，支持提案先重拟合后比较，并保留本v17求解为完整同轮控制；当前求解与版本见 [REFITTED_SUPPORT_EXCHANGE.md](REFITTED_SUPPORT_EXCHANGE.md)。
+
 本文件记录方法/工程协议，不上传回传成绩、分析或图表。性能是当前首要成功判据；更低 K、正常训练目标下降、正常几何可行均不能替代异常检测收益。
 
 ## 当前精确定义

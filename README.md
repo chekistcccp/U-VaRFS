@@ -1,5 +1,7 @@
+> **当前 v18**：固定原256维预算和capped cosine/variability目标，交换支持先重拟合再比较，保留完整v17同轮控制。默认164方法、BMAD全六984行；检测性能为首要依据，数据/memory与detector不变。见 [REFITTED_SUPPORT_EXCHANGE.md](REFITTED_SUPPORT_EXCHANGE.md)。
+
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v17-performance-first`**。用户明确要求性能优先；Main 固定使用原256维上限，不再优先减少维数，增加统一相对权重cap以限制集中，并在正常几何可行候选中比较正常表示/稳定性目标。旧 cosine 压缩策略作为 `asls_compression_uvarfs`、原 quadratic 完整 gram_* 控制保留；默认160方法、六数据集960行。Frozen backbone、ASLS、raw Main、无异常标签、正常数据/memory与detector保持。精确定义与运行见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，不宣称新策略尚未验证的真实性能提升。
+> **v17目标定义（当前v18沿用）**。用户明确要求性能优先；Main 固定使用原256维上限，不再优先减少维数，增加统一相对权重cap以限制集中，并在正常几何可行候选中比较正常表示/稳定性目标。旧 cosine 压缩策略作为 `asls_compression_uvarfs`、原 quadratic 完整 gram_* 控制保留；v17为160方法、六数据集960行；v18增加原v17控制，默认164方法、984行。Frozen backbone、ASLS、raw Main、无异常标签、正常数据/memory与detector保持。精确定义与运行见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，不宣称新策略尚未验证的真实性能提升。
 
 原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；v12 目标变更授权仅覆盖上述 U-VaRFS 数学升级，v14/v15 在该目标内改进数值求解。
 

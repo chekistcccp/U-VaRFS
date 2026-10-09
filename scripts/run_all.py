@@ -123,6 +123,9 @@ def main():
                 'normal_geometry_audit.json','representation_manifest.json'))
             compatible=compatible and all((out/branch['folder']/name).is_file()
                 for branch in experiment_branches(cfg) for name in ['asls.json','fit_manifest.json','uvarfs_main.json','normal_geometry_audit.json'])
+            if 'asls_fixed_budget_uvarfs' in cfg['methods']:
+                compatible=compatible and all((out/branch['folder']/'uvarfs_asls_fixed_budget.json').is_file()
+                    for branch in experiment_branches(cfg))
             if 'asls_compression_uvarfs' in cfg['methods']:
                 compatible=compatible and all((out/branch['folder']/'uvarfs_asls_compression.json').is_file()
                     for branch in experiment_branches(cfg))

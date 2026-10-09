@@ -373,6 +373,101 @@ def audit_cosine_path(result,cfg):
             **cosine_feasibility_diagnostics(result,cfg)}
 
 
+def audit_refitted_exchange_search(result,cfg):
+    """Audit accepted support transitions and every attempted refit cost."""
+    search=result['exchange_search'];manifest=result['solver_manifest'];pool=result['candidate_pool']
+    maximum=int(cfg.get('performance_exchange_max_steps',8));proposals=int(cfg.get('performance_exchange_candidates',8))
+    gain=float(cfg.get('support_exchange_min_improvement',1e-8));tolerance=cfg['geometry_tolerance']
+    count=min(cfg['max_features'],len(result['weights']));cap=cfg.get('performance_weight_cap_factor',4.)
+    floor=cfg.get('cosine_weight_floor_mass',1e-4)
+    if (search['strategy']!='refit_before_accept' or result['sparsity_strategy']!='fixed_budget_refitted_support_exchange' or
+        manifest.get('performance_exchange_strategy')!='refit_before_accept' or
+        manifest.get('performance_exchange_max_steps')!=maximum or manifest.get('performance_exchange_candidates')!=proposals or
+        not 0<search['reference_candidate_count']<=len(pool) or
+        search['reference_selected_candidate_id']>=search['reference_candidate_count']):
+        raise ValueError('refitted exchange manifest/reference scope differs')
+    references=pool[:search['reference_candidate_count']]
+    eligible_references=[c for c in references if c['geometry_error']<=tolerance]
+    reference_chosen=min(eligible_references,key=lambda c:(c['base_objective'],c['geometry_error'],c['candidate_id'])) if eligible_references else min(references,key=lambda c:(c['geometry_error'],c['base_objective'],c['candidate_id']))
+    if reference_chosen['candidate_id']!=search['reference_selected_candidate_id']:
+        raise ValueError('refitted exchange reference selection differs')
+    parents=[c['candidate_id'] for c in references if c['candidate_type']=='optimized']
+    if [t['parent_candidate_id'] for t in search['trajectories']]!=parents:
+        raise ValueError('refitted exchange parent candidates differ')
+    polishes=[];iterations=0;refits=0;accepted=0;uphill=0;linked=[]
+    for trace in search['trajectories']:
+        parent=pool[trace['parent_candidate_id']];active=np.asarray(parent['active'])
+        value=parent['base_objective'];geometry=parent['geometry_error'];used=0
+        if not np.isclose(trace['initial_objective'],value,atol=1e-8) or not np.isclose(trace['initial_geometry'],geometry,atol=1e-7):
+            raise ValueError('refitted exchange initial state differs')
+        attempts=trace['attempts'];steps=trace['steps']
+        if len(steps)>maximum or len(attempts)>maximum*proposals:
+            raise ValueError('refitted exchange exceeds configured solve budget')
+        for index,a in enumerate(attempts):
+            if (a['attempt_id']!=index or not 0<=a['step']<maximum or
+                not 0<=a['proposal_rank']<proposals or a['removed']==a['added']):
+                raise ValueError('refitted exchange proposal identity differs')
+            if a['initial_valid']:
+                polishes.append(audit_cosine_refit(a['refit'],cfg));refits+=1
+                used+=a['refit']['solver_iterations']
+                if not np.isfinite([a['before_refit'],a['after_refit'],a['geometry_after']]).all():
+                    raise ValueError('refitted exchange has nonfinite objective')
+                eligible=a['after_refit']<a['before']-gain and (a['geometry_before']>tolerance or a['geometry_after']<=tolerance)
+                if a['eligible']!=eligible or a['after_refit']>a['before_refit']+1e-7:
+                    raise ValueError('refitted exchange endpoint guard differs')
+                history=a['refit']['descent_history']
+                endpoint=history[-1]['after'] if history else a['refit']['polish']['after']
+                if not np.isclose(endpoint,a['after_refit'],atol=1e-7):
+                    raise ValueError('refitted exchange endpoint differs from refit')
+                uphill+=a['before_refit']>=a['before']-gain
+            elif a['refit'] is not None or a['accepted'] or a['eligible']:
+                raise ValueError('invalid zero-row exchange was refitted or accepted')
+        for index,step in enumerate(steps):
+            group=[a for a in attempts if a['step']==index]
+            eligible=[a for a in group if a['eligible']]
+            chosen=min(eligible,key=lambda a:(a['after_refit'],a['proposal_rank'])) if eligible else None
+            if (step['step']!=index or chosen is None or step['attempt_id']!=chosen['attempt_id'] or
+                not chosen['accepted'] or chosen['removed'] not in active or chosen['added'] in active or
+                not np.isclose(step['before'],value,atol=1e-8) or not np.isclose(step['geometry_before'],geometry,atol=1e-7)):
+                raise ValueError('refitted exchange accepted transition differs')
+            proposed=np.sort(np.where(active==chosen['removed'],chosen['added'],active))
+            weights=np.asarray(step['relative_weights']);observed=np.asarray(step['active'])
+            if (not np.array_equal(proposed,observed) or len(weights)!=count or not np.isfinite(weights).all() or
+                not np.isclose(weights.sum(),1,atol=1e-6) or weights.min()<floor/count-1e-9 or weights.max()>min(1.,cap/count)+1e-7 or
+                step['after']>=value-gain or geometry<=tolerance and step['geometry_after']>tolerance or
+                not np.isclose(step['after'],chosen['after_refit'],atol=1e-8) or
+                not np.isclose(step['geometry_after'],chosen['geometry_after'],atol=1e-7)):
+                raise ValueError('refitted exchange lost fixed K/cap/geometry or strict descent')
+            for a in group:
+                if not np.isclose(a['before'],value,atol=1e-8) or not np.isclose(a['geometry_before'],geometry,atol=1e-7):
+                    raise ValueError('refitted exchange proposals use different parent states')
+            active=observed;value=step['after'];geometry=step['geometry_after'];accepted+=1
+        terminal=[a for a in attempts if a['step']==len(steps)]
+        if terminal and (any(a['eligible'] or a['accepted'] or not np.isclose(a['before'],value,atol=1e-8) or
+                not np.isclose(a['geometry_before'],geometry,atol=1e-7) or a['removed'] not in active or a['added'] in active for a in terminal) or
+                trace['termination']!='no_improving_refitted_proposal'):
+            raise ValueError('refitted exchange terminal rejection differs')
+        if any(a['step']>len(steps) for a in attempts):
+            raise ValueError('refitted exchange attempts lack a preceding accepted transition')
+        if sum(a['accepted'] for a in attempts)!=len(steps) or used!=trace['solver_iterations']:
+            raise ValueError('refitted exchange omitted accepted steps or rejected refit costs')
+        if trace['candidate_id'] is not None:
+            linked.append(trace['candidate_id']);c=pool[trace['candidate_id']]
+            if (not steps or c['candidate_type']!='refitted_exchange' or c['parent_candidate_id']!=parent['candidate_id'] or
+                not np.array_equal(c['active'],active) or not np.allclose(np.asarray(c['weights'])[active],steps[-1]['relative_weights'],atol=1e-8)):
+                raise ValueError('refitted exchange candidate linkage differs')
+        elif steps:raise ValueError('accepted refitted exchange lacks its candidate')
+        if (not np.isclose(trace['final_objective'],value,atol=1e-8) or not np.isclose(trace['final_geometry'],geometry,atol=1e-7) or
+            trace['seconds']<0 or trace['objective_evaluations']<len(attempts)):
+            raise ValueError('refitted exchange final state/cost differs')
+        iterations+=used
+    if (linked!=list(range(search['reference_candidate_count'],len(pool))) or search['solver_iterations']!=iterations or
+        search['seconds']<0 or search['objective_evaluations']<sum(t['objective_evaluations'] for t in search['trajectories'])):
+        raise ValueError('refitted exchange total candidate linkage/cost differs')
+    return polishes,iterations,{'support_refits_attempted':refits,'support_exchanges_accepted':accepted,
+        'uphill_initial_proposals_refitted':uphill,'refitted_exchange_guards_verified':True}
+
+
 def audit_performance_path(result,cfg):
     """Verify the fixed budget/cap and normal-only finite-pool selection."""
     dimension=len(result['weights']); count=min(int(cfg['max_features']),dimension)
@@ -380,7 +475,7 @@ def audit_performance_path(result,cfg):
     tolerance=float(cfg['geometry_tolerance']); manifest=result['solver_manifest']
     expected={'fixed_features':count,'weight_floor_mass':floor,'weight_cap_factor':cap,
         'initializations':['original_gram','normal_energy','original_gram_selected_expanded'],
-        'candidate_types':['uniform_reference','optimized'],
+        'candidate_types':['uniform_reference','optimized','refitted_exchange'] if 'exchange_search' in result else ['uniform_reference','optimized'],
         'selection_metric':'normal_feasibility_then_representation_plus_variability',
         'geometry_chunk':cfg.get('cosine_geometry_chunk',512),
         'refit_max_iter':cfg.get('cosine_refit_max_iter',cfg['max_iter']),
@@ -422,13 +517,21 @@ def audit_performance_path(result,cfg):
         if c['candidate_type']=='uniform_reference':
             if c['initial_refit'] is not None or c['exchange_history'] or not np.allclose(w[active],1/count,atol=1e-8):
                 raise ValueError('performance-first uniform reference was refitted')
-        else:
+        elif c['candidate_type']=='optimized':
             refits=[c['initial_refit']]+[e['refit'] for e in c['exchange_history']]
             for r in refits:
                 polishes.append(audit_cosine_refit(r,cfg));iterations+=r['solver_iterations']
             for e in c['exchange_history']:
                 if e['after']>=e['before'] or e['removed']==e['added']:
                     raise ValueError('performance-first exchange does not improve the normal objective')
+        elif c['initial_refit'] is not None or c['exchange_history']:
+            raise ValueError('refitted exchange candidate duplicates refit costs')
+    search_audit={}
+    if 'exchange_search' in result:
+        search_polishes,used,search_audit=audit_refitted_exchange_search(result,cfg)
+        polishes.extend(search_polishes);iterations+=used
+    elif result['sparsity_strategy']!='fixed_budget_capped_simplex_support_search':
+        raise ValueError('performance exchange strategy lacks its search diagnostics')
     eligible=[c for c in pool if c['geometry_error']<=tolerance]
     chosen=min(eligible,key=lambda c:(c['base_objective'],c['geometry_error'],c['candidate_id'])) if eligible else min(pool,key=lambda c:(c['geometry_error'],c['base_objective'],c['candidate_id']))
     if (result['candidate_id']!=chosen['candidate_id'] or result['feasible']!=bool(eligible) or
@@ -457,7 +560,7 @@ def audit_performance_path(result,cfg):
     return {'points':1,'candidate_pool_size':len(pool),'selected_nonzero_features':count,
             'objective_definition':PERFORMANCE,'certificate_scope':result['objective_certificate_scope'],
             'selection_and_guards_verified':True,'global_optimality_claimed':False,
-            **cosine_feasibility_diagnostics(result,cfg)}
+            **search_audit,**cosine_feasibility_diagnostics(result,cfg)}
 
 
 def audit_representation_protocol(folder, cfg, frame, primary_fit):
@@ -527,6 +630,19 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
             if 'support_source_method' in own_rows and (own_rows.loc[prefix+'asls_selected_raw'].support_source_method!=own or
                 own_rows.loc[prefix+'asls_selected_raw'].representation_weighting!='uniform_on_main_support'):
                 raise ValueError('selected-support CSV source/weighting differs')
+        if 'asls_fixed_budget_uvarfs' in cfg['methods']:
+            fixed=json.loads((output/'uvarfs_asls_fixed_budget.json').read_text())
+            diag=normal['methods']['asls_fixed_budget_uvarfs']
+            if (fixed['objective_definition']!=PERFORMANCE or fixed['layers']!=u['layers'] or
+                fixed['layer_normalization']!=mode or fixed['sparsity_strategy']!='fixed_budget_capped_simplex_support_search' or
+                diag['feature_dim']!=len(fixed['active']) or not np.isclose(fixed['geometry_error'],diag['vs_selected_input_cosine']['cosine_gram_relative_error'],atol=2e-6,rtol=1e-5) or
+                'feature_dim' in own_rows and own_rows.loc[prefix+'asls_fixed_budget_uvarfs'].feature_dim!=len(fixed['active']) or
+                'uvarfs_objective_definition' in own_rows and own_rows.loc[prefix+'asls_fixed_budget_uvarfs'].uvarfs_objective_definition!=PERFORMANCE):
+                raise ValueError('v17 fixed-budget control differs from same-input protocol')
+            audit_sparse_path(fixed,cfg['uvarfs'])
+            if branch['objective']==PERFORMANCE and cfg['uvarfs'].get('performance_exchange_strategy')=='refit_before_accept':
+                if ('exchange_search' not in u or u['candidate_pool'][:u['exchange_search']['reference_candidate_count']]!=fixed['candidate_pool']):
+                    raise ValueError('Main failed to preserve the complete v17 reference pool')
         if 'asls_compression_uvarfs' in cfg['methods']:
             compression=json.loads((output/'uvarfs_asls_compression.json').read_text())
             diag=normal['methods']['asls_compression_uvarfs']
@@ -756,7 +872,7 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_raw':[f'randomk_raw_seed{s}' for s in seeds],
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
-        for method in ['asls_compression_uvarfs','asls_selected_raw','all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
+        for method in ['asls_fixed_budget_uvarfs','asls_compression_uvarfs','asls_selected_raw','all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
                        'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','legacy_main',
                        'layer_l2_main','raw_input_main','gram_main']:
             if method in source.method.values:
@@ -774,7 +890,7 @@ def audit(results: Path, output: Path, draws: int):
         for branch in branches[1:]:
             prefix=branch['prefix']; target=prefix+'main'
             groups={prefix+family:[prefix+family] for family in [
-                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','asls_compression_uvarfs','asls_selected_raw','legacy_main',
+                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','asls_fixed_budget_uvarfs','asls_compression_uvarfs','asls_selected_raw','legacy_main',
                 'asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs'] if prefix+family in source.method.values}
             groups.update({prefix+family:[f'{prefix}{family}_seed{s}' for s in seeds]
                            for family in ['randomk_raw','randomk_uvarfs','asls_random']})
@@ -899,7 +1015,7 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda value:f'{value*100:.2f}' if pd.notna(value) else 'n.a.')
     comparisons=pd.DataFrame({'dataset':DATASETS})
-    for family in ['main','gram_main','asls_compression_uvarfs','layer_l2_asls_compression_uvarfs','asls_raw','asls_pca','asls_selected_raw','gram_asls_selected_raw','layer_l2_asls_selected_raw','layer_l2_gram_asls_selected_raw','asls_random','fixed4_raw','all_raw','all_uvarfs',
+    for family in ['main','gram_main','asls_fixed_budget_uvarfs','asls_compression_uvarfs','layer_l2_asls_compression_uvarfs','asls_raw','asls_pca','asls_selected_raw','gram_asls_selected_raw','layer_l2_asls_selected_raw','layer_l2_gram_asls_selected_raw','asls_random','fixed4_raw','all_raw','all_uvarfs',
                    'gram_asls_pca','gram_asls_random','layer_l2_main','layer_l2_gram_main','layer_l2_asls_raw']:
         if family not in macro:
             continue
@@ -969,6 +1085,7 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
         lines=[line for line in lines if not line.startswith(('cosine_simplex_cardinality 的 feasible','新目标非凸且包含离散支持。'))]
         lines+=['## 性能优先协议','',
             'Main 使用 cosine_simplex_fixed_budget：固定既定最大 K，保留原正常 cosine/variability 项，权重 floor/K≤p≤4/K（具体 cap 以 config 为准），不扫 lambda 或优先减少维数。有限候选池先满足正常几何约束，再比较正常完整目标；没有可行候选时明确 fallback，不宣称预算全局不可行。', '',
+            'v18 如存在 refitted_support_exchange，交换提案先在同一 capped simplex 重拟合后再比较正常目标；全部 v17 候选保留，并以 asls_fixed_budget_uvarfs 同轮评价。接受时保护已有正常几何可行状态，拒绝提案成本也计入，不证明异常性能必增。', '',
             '旧 cosine/cardinality/lambda Main 以 asls_compression_uvarfs 单独保留，原 quadratic 仍是完整 gram_* 分支。same-support/PCA/Random 匹配各支 Main K。权重 cap 的有效维数下界只限制系数集中，不证明异常 AUROC/AUPRO 改善或独立信息维数。', '']
     if feasibility_rows:
         frame=pd.DataFrame(feasibility_rows); frame.to_csv(output/'cosine_feasibility_scope.csv',index=False)

@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v17-performance-first
+results_dir: results/gpu-eval-v18-refitted-support-exchange
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -46,6 +46,10 @@ uvarfs:
   objective: cosine_simplex_fixed_budget
   # User requests performance priority: fixed maximum K, bounded relative weights.
   performance_weight_cap_factor: 4.0
+  # Same fixed-budget objective: judge swaps after capped weight refitting.
+  performance_exchange_strategy: refit_before_accept
+  performance_exchange_max_steps: 8
+  performance_exchange_candidates: 8
   ablation_objective: quadratic_gram
   sparsity_strategy: objective_forward_refit
   cosine_support_step: 32
@@ -88,6 +92,8 @@ methods:
   - asls_selected_raw
   # Previous compression-first cosine Main on the same normal inputs.
   - asls_compression_uvarfs
+  # Complete v17 fixed-budget solver on the same ASLS normal input.
+  - asls_fixed_budget_uvarfs
   - asls_pca
   - asls_random
   - fixed4_uvarfs
