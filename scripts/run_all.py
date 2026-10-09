@@ -12,7 +12,7 @@ from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_all_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 from uvarfs.representation import normalization_modes, normalization_prefix
-from uvarfs.objectives import experiment_branches, COSINE
+from uvarfs.objectives import experiment_branches, COSINE, PERFORMANCE
 
 from uvarfs.selection_diagnostics import cosine_feasibility_diagnostics
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
@@ -123,6 +123,9 @@ def main():
                 'normal_geometry_audit.json','representation_manifest.json'))
             compatible=compatible and all((out/branch['folder']/name).is_file()
                 for branch in experiment_branches(cfg) for name in ['asls.json','fit_manifest.json','uvarfs_main.json','normal_geometry_audit.json'])
+            if 'asls_compression_uvarfs' in cfg['methods']:
+                compatible=compatible and all((out/branch['folder']/'uvarfs_asls_compression.json').is_file()
+                    for branch in experiment_branches(cfg))
             if 'asls_selected_raw' in cfg['methods']:
                 compatible=compatible and all((out/branch['folder']/'selected_support_control.json').is_file()
                     for branch in experiment_branches(cfg))
@@ -210,7 +213,12 @@ def main():
                 obj=spec['obj']
                 r.update(uvarfs_objective_definition=obj.get('objective_definition','quadratic_gram'),
                          uvarfs_geometry_metric=obj.get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius'))
-                if obj.get('objective_definition')==COSINE:
+                if obj.get('objective_definition') in {COSINE,PERFORMANCE}:
+                    if obj['objective_definition']==PERFORMANCE:
+                        r.update(uvarfs_weight_cap_factor=obj['weight_cap_factor'],
+                            uvarfs_maximum_relative_weight=obj['maximum_relative_weight'],
+                            uvarfs_effective_dimension_lower_bound=obj['effective_dimension_lower_bound'],
+                            uvarfs_selection_policy=obj['selection_policy'])
                     feasibility=cosine_feasibility_diagnostics(obj,cfg['uvarfs'])
                     r.update({f'uvarfs_{key}':value for key,value in feasibility.items()})
                     r.update(uvarfs_geometry_error=obj['geometry_error'],uvarfs_geometry_feasible=obj['feasible'],

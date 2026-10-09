@@ -280,7 +280,7 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
         cfg['methods']=[name.replace('asls_pooled_','asls_patch_') for name in cfg['methods']]
     # Preserve the historical 37-method v9 protocol as an explicit regression.
     cfg['uvarfs'].update(objective='quadratic_gram',ablation_objective=None)
-    cfg['methods']=[m for m in cfg['methods'] if m not in {'asls_exchange_refit_uvarfs','asls_selected_raw'}]
+    cfg['methods']=[m for m in cfg['methods'] if m not in {'asls_exchange_refit_uvarfs','asls_selected_raw','asls_compression_uvarfs'}]
     cfg['uvarfs'].update(sparsity_strategy='objective_exchange_refit',min_features=2,max_features=4,max_iter=400,
                          lambda_grid=[.01,.0001,.000001],geometry_tolerance=.8)
     cfg['eval'].update(bootstrap_samples=0,max_heatmaps_per_dataset=2)

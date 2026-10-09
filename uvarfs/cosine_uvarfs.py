@@ -102,7 +102,7 @@ class CosineObjective:
         return value,g if gradient else None,terms
 
 
-def polish_simplex(engine, active, p, cfg, label, state=None):
+def polish_simplex(engine, active, p, cfg, label, state=None, projection=None, weight_cap_factor=None):
     """Guarded SQP endpoint refinement of the SAME fixed-support objective.
 
     SciPy controls only the <=256-dimensional vector on CPU; the blocked Torch
@@ -111,13 +111,14 @@ def polish_simplex(engine, active, p, cfg, label, state=None):
     evaluated endpoint with strict actual descent replaces the incoming point.
     SciPy success is never used as a first-order or global certificate.
     """
+    project=project_simplex if projection is None else projection
     floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
     maximum=int(cfg.get('cosine_polish_max_iter',200))
     ftol=float(cfg.get('cosine_polish_ftol',1e-12))
     if maximum<0 or not np.isfinite(ftol) or ftol<=0:
         raise ValueError('invalid cosine polish limits')
     value,g,terms=engine.evaluate(active,p,True) if state is None else state
-    residual=float((p-project_simplex(p-g,floor)).norm())
+    residual=float((p-project(p-g,floor)).norm())
     diag={'method':'slsqp_fixed_support','attempted':False,'accepted':False,
           'before':float(value),'after':float(value),'residual_before':residual,
           'residual_after':residual,'optimizer_success':None,'optimizer_status':None,
@@ -140,7 +141,7 @@ def polish_simplex(engine, active, p, cfg, label, state=None):
             print(f'[{label}] cosine-polish iter={callback_iterations} elapsed={now-started:.1f}s',flush=True)
             last_log=now
     solved=minimize(objective,p.detach().double().cpu().numpy(),method='SLSQP',jac=True,
-        bounds=[(floor/len(p),1.)]*len(p),
+        bounds=[(floor/len(p),1. if weight_cap_factor is None else min(1.,weight_cap_factor/len(p)))]*len(p),
         constraints={'type':'eq','fun':lambda weights:weights.sum()-1.,
                      'jac':lambda weights:np.ones_like(weights)},
         callback=progress,options={'ftol':ftol,'maxiter':maximum})
@@ -151,12 +152,12 @@ def polish_simplex(engine, active, p, cfg, label, state=None):
     endpoint=np.asarray(solved.x)
     trial=p.new_tensor(endpoint) if endpoint.shape==tuple(p.shape) else None
     if trial is not None and bool(torch.isfinite(trial).all()):
-        trial=project_simplex(trial,floor)
+        trial=project(trial,floor)
         trial_value,trial_g,trial_terms=engine.evaluate(active,trial,True)
         if trial_value<value:
             p=trial; value=trial_value; g=trial_g; terms=trial_terms
             diag.update(accepted=True,termination='strict_objective_descent')
-    residual=float((p-project_simplex(p-g,floor)).norm())
+    residual=float((p-project(p-g,floor)).norm())
     diag.update(after=float(value),residual_after=residual,
                 objective_evaluations=engine.evaluations-evaluations,
                 seconds=time.perf_counter()-started)
@@ -166,9 +167,10 @@ def polish_simplex(engine, active, p, cfg, label, state=None):
     return p,terms,diag
 
 
-def refit_simplex(engine, active, initial, cfg, label):
+def refit_simplex(engine, active, initial, cfg, label, projection=None, weight_cap_factor=None):
+    project=project_simplex if projection is None else projection
     floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
-    p=project_simplex(initial,floor)
+    p=project(initial,floor)
     maximum=int(cfg.get('cosine_refit_max_iter',cfg.get('max_iter',2000)))
     tolerance=float(cfg.get('tol',1e-5))
     step=float(cfg.get('cosine_initial_step',.05))
@@ -177,7 +179,7 @@ def refit_simplex(engine, active, initial, cfg, label):
     status='iteration_limit'; used=0; relative=0.; history=[]
     value,g,terms=engine.evaluate(active,p,True)
     for iteration in range(maximum):
-        residual=float((p-project_simplex(p-g,floor)).norm())
+        residual=float((p-project(p-g,floor)).norm())
         if residual<=tolerance:
             status='fixed_support_stationary'; break
         if iteration%log_every==0:
@@ -185,7 +187,7 @@ def refit_simplex(engine, active, initial, cfg, label):
                   f'geometry={terms["geometry_error"]:.4f} residual={residual:.3e}',flush=True)
         accepted=False; trial_step=step
         for _ in range(backtracks):
-            trial=project_simplex(p-trial_step*g,floor)
+            trial=project(p-trial_step*g,floor)
             change=trial-p
             if not bool(change.abs().max()>0):
                 break
@@ -210,7 +212,7 @@ def refit_simplex(engine, active, initial, cfg, label):
         used=iteration+1
     projected_status=status; projected_iterations=used
     old_p=p
-    p,terms,polish=polish_simplex(engine,active,p,cfg,label,(value,g,terms))
+    p,terms,polish=polish_simplex(engine,active,p,cfg,label,(value,g,terms),projection,weight_cap_factor)
     if polish['accepted']:
         relative=float((p-old_p).norm()/old_p.norm().clamp_min(1e-12))
         history.append({'iteration':used+polish['iterations'],'phase':'slsqp_endpoint',
@@ -319,7 +321,7 @@ def prune_cosine_support(engine, active, p, count, cfg, label):
     return (None,None,diag) if chosen is None else (chosen[0],chosen[1],diag)
 
 
-def exchange_simplex(engine, active, p, cfg, label):
+def exchange_simplex(engine, active, p, cfg, label, projection=None, weight_cap_factor=None):
     maximum=int(cfg.get('cosine_exchange_max_steps',cfg.get('support_exchange_max_steps',8)))
     proposals=int(cfg.get('cosine_exchange_candidates',8))
     gain=float(cfg.get('support_exchange_min_improvement',1e-8))
@@ -348,7 +350,7 @@ def exchange_simplex(engine, active, p, cfg, label):
             break
         before=float(value)
         value,active,p,terms,removed,added=best
-        p,terms,diag=refit_simplex(engine,active,p,cfg,label)
+        p,terms,diag=refit_simplex(engine,active,p,cfg,label,projection,weight_cap_factor)
         value,_,terms=engine.evaluate(active,p)
         total_iterations+=diag['solver_iterations']
         history.append({'removed':removed,'added':added,'before':before,'after':float(value),

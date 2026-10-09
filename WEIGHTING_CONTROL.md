@@ -1,4 +1,6 @@
-# v16：同支持的相对权重对照与可行性作用域
+# v16：同支持的相对权重对照与可行性作用域（历史开发记录）
+
+当前 v17 性能优先定义见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，本节控制与诊断继续保留。
 
 版本 `gpu-eval-v16-weighting-control`；新目录 `results/gpu-eval-v16-weighting-control/`。
 本文件记录开发协议；真实回传指标、分析与图表仅留本地 `results/`、`reports/`。

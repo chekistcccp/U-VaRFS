@@ -1,6 +1,6 @@
 # v12：已批准的 cosine/simplex U-VaRFS
 
-本文保留 v12 目标升级开发记录。v14 在同一目标内加入固定支持数值精修；当前 v15 修正有限删维提案，v15 solver 规则见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)。当前 v16 仅增加同支持权重对照与只读可行性作用域，见 [WEIGHTING_CONTROL.md](WEIGHTING_CONTROL.md)。
+本文保留 v12 目标升级开发记录。当前 v17 性能优先 Main 见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，本旧 cosine/cardinality 策略作为完整 Main 控制保留。v14 在同一目标内加入固定支持数值精修；当前 v15 修正有限删维提案，v15 solver 规则见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)。当前 v16 仅增加同支持权重对照与只读可行性作用域，见 [WEIGHTING_CONTROL.md](WEIGHTING_CONTROL.md)。
 
 用户明确批准：**“批准设计的改进，修改对应代码并同步到仓库”**。此前 [目标提案](UV_COSINE_OBJECTIVE_PROPOSAL.md) 的待批准状态由本授权取代。本版本实际接入新的主目标，不能称为原公式的等价工程优化。
 

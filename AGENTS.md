@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前工程状态见第 41 节（v16 同支持权重消融与可行性诊断）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
+> **当前工程状态见第 42 节（v17 性能优先）**。用户于 2026-10-09 明确将更强检测性能置于更强压缩之前；当前 Main 见第 5.5/42 节的固定预算、capped cosine/simplex U-VaRFS。第 5.4/37 节旧 cosine 压缩策略作为 `asls_compression_uvarfs` 保留，第 5.2 节原公式继续完整 `gram_*` 控制。raw Main 固定、L2 消融保留；不按 test 选择主输入。
 
 ---
 
@@ -293,7 +293,7 @@ normal representation preservation
 
 ## 5.2 数学主线
 
-**历史原 quadratic 公式**：用户已于第 37 节明确批准 cosine/simplex 目标升级。本节公式在 `gram_*` 完整消融中保持，不再定义当前 Main；当前精确目标见第 5.4 节。该批准是明确方法变更，不能包装为等价提速。
+**历史原 quadratic 公式**：用户已于第 37 节明确批准 cosine/simplex 目标升级。本节公式在 `gram_*` 完整消融中保持，不再定义当前 Main；当前性能优先目标见第 5.5/42 节；第 5.4 节保留此前已批准的目标控制。该批准是明确方法变更，不能包装为等价提速。
 
 ASLS 选择层后，将对应 latent features 拼接：
 
@@ -389,7 +389,7 @@ lambda|w|_1
 
 ## 5.3 原目标控制 solver
 
-以下 batched FISTA / 原目标支持集求解仅属于 quadratic 控制；当前 Main 的分块 cosine 梯度、simplex refit 和支持候选见第 37 节。
+以下 batched FISTA / 原目标支持集求解仅属于 quadratic 控制；当前 Main 的分块 cosine 梯度、capped refit 与固定预算候选见第 5.5/42 节。
 
 当前 `uvarfs/u_varfs.py` 已改为：
 
@@ -433,7 +433,7 @@ lambda selection 必须保持 label-free：
 
 禁止使用 anomaly AUROC 来挑 lambda。
 
-## 5.4 用户批准后的当前主目标
+## 5.4 v12–v16 已批准的 cosine/cardinality 目标（当前作为控制）
 
 ASLS 后正常 patch 拼接 X，定义 `p>=0, sum(p)=1`、`Y=X diag(sqrt(p))`、`C(p)=cosine_gram(Y)`、`C_full=cosine_gram(X)`、`p0=1/M`：
 
@@ -446,6 +446,16 @@ min_p 0.5 * ||C_full-C(p)||_F² / ||C_full||_F²
 P 保持正常 nuisance variability 与原列归一化；P 全零时该项为零。原 beta/lambda grid 数字、32–256 非零预算保持，但损失单位已改变。支持上 `p_j>=1e-4/K`，零行候选无效，报告 effective dimension。采用固定支持 simplex 投影/下降线搜索及预算内支持候选，lambda 在有限生成池内比较完整目标，再按 actual cosine 容差选择最稀疏可行点或明确不可行 fallback。该非凸目标只有固定支持一阶残差，不借用原 convex/global Gram 证书。
 
 本次批准不更改 ASLS、Frozen backbone、无异常标签约束、数据/memory 预算、detector 或输入 Main。完整实现、配置、控制与边界见 [COSINE_UVARFS_UPGRADE.md](COSINE_UVARFS_UPGRADE.md)。
+
+---
+
+## 5.5 用户于 2026-10-09 要求性能优先后的当前 Main
+
+Main `objective: cosine_simplex_fixed_budget`。保持正常 cosine 表示损失、原 variability/P 标定与 beta=0.002，令 K=min(256,M)，每个支持固定 K，p>=floor_mass/K、sum(p)=1，并增加 p<=min(1,4/K)。不扫 Main lambda、不优先挑最小维数；稀疏由原上限256的硬预算实现。
+
+在实际正常 cosine error<=0.05 的固定预算生成候选中选正常表示/稳定性目标最小点；无可行候选时仍明确 infeasible fallback，不声明全局最优。保留每起点 uniform reference，使用 capped 投影/SLSQP/refit/交换，固定支持残差按新约束计算。有效权重维数>=K/4，仅限制系数集中，不是 AD 性能保证。
+
+这是依据用户当前要求的明确方法/选择约束调整，不是等价提速；精确目标、比较与边界见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)。原 cosine/cardinality 完整 Main 控制及 quadratic 全分支保留。ASLS、Frozen backbone、raw 主输入、正常数据/维度上限/memory预算、detector、六数据集与无异常标签约束保持。
 
 ---
 
@@ -829,7 +839,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v16-weighting-control
+gpu-eval-v17-performance-first
 ```
 
 原因：
@@ -947,7 +957,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v16-weighting-control
+experiment_version = gpu-eval-v17-performance-first
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1093,6 +1103,8 @@ U-VaRFS vs PCA / Random / Raw。
 
 # 23. 项目成功判据
 
+**2026-10-09 用户更新：检测性能是首要依据。更强压缩不得作为性能下降的补偿或本轮改进目标。下面的原优先级保留主线语境，当前性能优先规则与约束以第42节为准。**
+
 本项目成功不等于必须所有 benchmark SOTA。
 
 优先级依次是：
@@ -1156,7 +1168,7 @@ Codex 接手后优先级：
    - ASLS 有日志；
    - cosine/refit、候选 feasible/残差/有效维数和原 batched FISTA 控制有日志；
    - PCA GPU fit 有日志；
-   - 四支正常 manifest、156 方法与 memory/test 正常；
+   - 四支正常 manifest、160 方法与 memory/test 正常；
 5. Liver 完成后再全 6 benchmark；
 6. 再考虑双 3090 dataset-level parallel runner；
 7. 结果稳定后补缺失 baseline 与论文图表。
@@ -1425,7 +1437,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 41. 2026-10-09 v16 同支持权重消融与可行性诊断（当前工程状态）
+# 41. 2026-10-09 v16 同支持权重消融与可行性诊断（历史工程交接）
 
 版本 `gpu-eval-v16-weighting-control`；新目录 `results/gpu-eval-v16-weighting-control/`。Main 保持第 5.4/37 节已批准目标与 raw 输入，v15 solver 原样保留。详细定义、第 19 节检查与运行见 [WEIGHTING_CONTROL.md](WEIGHTING_CONTROL.md)。回传 CSV/JSON、分析/图表/日志依第 28 节仅留本地，不写入本开发交接。
 
@@ -1436,3 +1448,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 新版本不覆盖/混合 v15，resume 还须有四个控制 artifact。代码/配置/测试/开发交接依第 28 节提交推送；实验产物仅留本地。
 
 157 项完整本地检查通过，6 项 CUDA 检查因缺 runtime 跳过。两种 primary 下新增控制前后原 152 方法支持/scales、共享 fit/扰动/memory 清单、memory 值、逐图预测及 image/pixel 点估计一致；四支控制身份、错配/CSV scope 拒绝、报告与完整 resume 通过。ASLS、两 solver、variability、detector、metrics/backbone 源码和全部 Main 设置逐项对照保持；shell/diff 检查通过。历史版本报告兼容，源产物未改写。真实 BMAD/模型/CUDA 不在本机；服务器先 Liver 验证运行，再固定配置全六；新同支持对照尚无真实回传性能。
+
+
+---
+
+# 42. 2026-10-09 v17 性能优先（当前工程状态）
+
+用户明确要求：“不要使用更强的压缩，就需要更强的性能，依此为依据进行改进”。版本 `gpu-eval-v17-performance-first`，新目录 `results/gpu-eval-v17-performance-first/`。当前 Main 定义见第5.5节与 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，不是仅增加诊断或等价提速。回传成绩/分析/图表/日志依第28节仅留本地。
+
+- U-VaRFS 固定使用原 max_features=256，不以更小 K 为优先目标，不再以 λ·K 在不同维数间选解。保持正常 cosine/variability 项，增加 p<=4/K 的统一 cap，避免相对系数极端集中；floor与β/geometry容差保持，固定支持 residual按 capped simplex 计算。
+- 保留各起点未精修 uniform reference；在正常几何可行固定预算候选中比较正常目标，无可行候选时明确 fallback。未做 Main lambda sweep，不使用 test 指标；不声称非凸/稀疏全局最优或性能必增。
+- 新 `asls_compression_uvarfs` 保留此前原 cosine/cardinality/lambda Main 完整控制；原 quadratic 保持完整 gram_*。四支默认160方法、全六960行；五 seeds、同维 PCA/Random、同支持去权重消融保留。
+- ASLS、Frozen DINOv3全部层、raw Main/L2消融、normal fit/扰动/memory/表示上限、cosine 1-NN/Top-1%/pixel protocol 均保持。授权是性能优先的 feature 约束调整，不按历史 test 切换 L2 Main。
+- 新版本与新指纹，resume 须有四支原文件、同支持artifact与旧 cosine 控制文件。代码/配置/测试/开发交接完成检查后提交推送，结果仅留本地。
+
+176 项完整本地检查通过，7 项 CUDA 检查因缺 runtime 跳过。独立 projection oracle、有效维数下界/集中反例、可行参考保护/明确 fallback、两种输入160方法与全部同维/共享协议、报告/resume/历史回归通过。原 cosine 完整控制在两输入独立对照与上一提交权重/支持/选解完全一致；CosineObjective/原投影/pruning AST 保持，ASLS/variability/backbone/detector/evaluation源码不变。shell/diff检查通过。本机缺真实 BMAD/模型/CUDA；先服务器 Liver 验证运行，再固定全六。后续以真实检测指标判断收益，不能以压缩、低正常 loss 或数学/fixture 通过代替性能改善。

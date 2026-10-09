@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v16-weighting-control
+results_dir: results/gpu-eval-v17-performance-first
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -43,7 +43,9 @@ asls:
 
 uvarfs:
   # User-approved method upgrade; original objective is a full paired control.
-  objective: cosine_simplex_cardinality
+  objective: cosine_simplex_fixed_budget
+  # User requests performance priority: fixed maximum K, bounded relative weights.
+  performance_weight_cap_factor: 4.0
   ablation_objective: quadratic_gram
   sparsity_strategy: objective_forward_refit
   cosine_support_step: 32
@@ -84,6 +86,8 @@ methods:
   - asls_raw
   # Same Main support with uniform relative weights; diagnostic ablation only.
   - asls_selected_raw
+  # Previous compression-first cosine Main on the same normal inputs.
+  - asls_compression_uvarfs
   - asls_pca
   - asls_random
   - fixed4_uvarfs

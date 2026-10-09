@@ -7,7 +7,7 @@ from pathlib import Path
 from .representation import normalization_modes, normalization_prefix
 from .objectives import experiment_branches
 
-EXPERIMENT_VERSION = 'gpu-eval-v16-weighting-control'
+EXPERIMENT_VERSION = 'gpu-eval-v17-performance-first'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 

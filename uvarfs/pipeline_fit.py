@@ -10,7 +10,8 @@ from .perturb import perturb_batch, PERTURBATIONS
 from .asls import fit_asls, reselect_asls
 from .u_varfs import fit_uvarfs
 from .cosine_uvarfs import fit_cosine_uvarfs
-from .objectives import COSINE, QUADRATIC, objective_modes, experiment_branches
+from .performance_uvarfs import fit_performance_uvarfs
+from .objectives import COSINE, QUADRATIC, PERFORMANCE, objective_modes, experiment_branches
 from .transforms import fit_pca
 from .utils import save_json
 from .variability import NormalVariability
@@ -183,7 +184,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         audit=result.get('budget_geometry_audit')
         mass=audit['coordinate_reference_alignment'] if audit is not None else []
         by_layer={str(l):sum(mass[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim]) for i,l in enumerate(layers)}
-        relative=result.get('budgeted_weights',[]) if result.get('objective_definition')==COSINE else []
+        relative=result.get('budgeted_weights',[]) if result.get('objective_definition') in {COSINE,PERFORMANCE} else []
         relative_by_layer={str(l):float(sum(relative[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim])) for i,l in enumerate(layers)} if len(relative) else None
         save_json({'layers':layers,'layer_normalization':input_mode,
                    'normal_reference_alignment_by_layer':by_layer if mass else None,
@@ -204,10 +205,11 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         key=tuple(layers)
         if key not in uv_cache:
             old=fit_gram(name,layers)
-            if objective==COSINE:
+            if objective in {COSINE,PERFORMANCE}:
                 x=torch.cat([patches[l] for l in layers],dim=-1)
                 v=torch.cat([variabilities[l] for l in layers],dim=1)
-                uv_cache[key]=fit_cosine_uvarfs(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:cosine')
+                fit=fit_performance_uvarfs if objective==PERFORMANCE else fit_cosine_uvarfs
+                uv_cache[key]=fit(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:{objective}')
             else:
                 uv_cache[key]=old
         r=uv_cache[key]
@@ -231,6 +233,14 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         "fixed4_uvarfs": {"layers": fixed, "kind": "uvarfs", "obj": fixed_uv},
         "all_uvarfs": {"layers": all_layers, "kind": "uvarfs", "obj": all_uv},
     }
+    if 'asls_compression_uvarfs' in enabled:
+        cache=gram_cache.setdefault('compression_cosine_controls',{})
+        key=tuple(selected)
+        if key not in cache:
+            v=torch.cat([variabilities[l] for l in selected],dim=1)
+            cache[key]=fit_cosine_uvarfs(xsel,v,cfg['uvarfs'],main_gram,label='uvarfs:compression-control')
+        save_uv('asls_compression',selected,cache[key])
+        specs['asls_compression_uvarfs']={'layers':selected,'kind':'uvarfs','obj':cache[key]}
     if 'asls_selected_raw' in enabled:
         # Copy the fitted Main support, never rerank, refit or use test data.
         control={'layers':list(selected),'active':[int(j) for j in main_uv['active']],
@@ -316,7 +326,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
             v['objective_branch']=objective
             if v['kind']=='uvarfs':
                 v['uvarfs_objective']=v['obj'].get('objective_definition',QUADRATIC)
-            if k in {'main','asls_raw','asls_pca','asls_selected_raw'} or base=='asls_random':
+            if k in {'main','asls_raw','asls_pca','asls_selected_raw','asls_compression_uvarfs'} or base=='asls_random':
                 v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
     print('[fit] normal cosine geometry audit (diagnostic only)',flush=True)

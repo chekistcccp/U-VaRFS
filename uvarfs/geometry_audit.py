@@ -79,7 +79,7 @@ def audit_normal_geometry(patches, specs, layer_normalization='none'):
             'unit_layer_consensus_vs_raw_full_cosine_error':mismatch,
             'layer_patch_norms':{str(l):describe_norms(patches[l]) for l in layers},
             'methods':{}}
-    targets=['main','asls_raw','asls_selected_raw','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','asls_top_weights_uvarfs',
+    targets=['main','asls_compression_uvarfs','asls_raw','asls_selected_raw','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','asls_top_weights_uvarfs',
              'asls_gate_prefix_raw','asls_gate_prefix_uvarfs','legacy_main']
     for name in targets:
         if name not in specs:

@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v16-weighting-control`**。Main 保持已批准的 cosine/simplex/cardinality 目标与 raw 输入，v15 solver 原样保留。新增四支同 Main 支持、去相对权重的 `asls_selected_raw` 消融，默认 156 方法；只读诊断区分生成池与 lambda 路径可行性，不改选解。原全部控制、五 seeds、正常数据/表示/memory 预算和 detector 保持。定义与运行见 [WEIGHTING_CONTROL.md](WEIGHTING_CONTROL.md)，v15 删维、v14 精修与 v13 评价收尾继续保留。
+> **当前实现版本：`gpu-eval-v17-performance-first`**。用户明确要求性能优先；Main 固定使用原256维上限，不再优先减少维数，增加统一相对权重cap以限制集中，并在正常几何可行候选中比较正常表示/稳定性目标。旧 cosine 压缩策略作为 `asls_compression_uvarfs`、原 quadratic 完整 gram_* 控制保留；默认160方法、六数据集960行。Frozen backbone、ASLS、raw Main、无异常标签、正常数据/memory与detector保持。精确定义与运行见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，不宣称新策略尚未验证的真实性能提升。
 
 原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；v12 目标变更授权仅覆盖上述 U-VaRFS 数学升级，v14/v15 在该目标内改进数值求解。
 
@@ -312,15 +312,19 @@ M = 4\times384=1536
 
 ### 7.3 表征几何保持
 
-用户批准后的 Main 使用 detector 实际 cosine 几何。令 `p>=0, sum(p)=1`，`Y=X diag(sqrt(p))`，`C(p)=cosine_gram(Y)`，`C_full=cosine_gram(X)`。当前精确目标为：
+当前性能优先 Main 使用 detector 实际 cosine 几何。令 `p>=0, sum(p)=1`，`Y=X diag(sqrt(p))`，`C(p)=cosine_gram(Y)`，`C_full=cosine_gram(X)`：
 
 ```text
-0.5 * ||C_full-C(p)||_F² / ||C_full||_F²
-+ beta * ||P^T p||² / ||P^T (1/M)||²
-+ lambda * ||p||_0
+min 0.5 * ||C_full-C(p)||_F² / ||C_full||_F²
+    + beta * ||P^T p||² / ||P^T (1/M)||²
+subject to |support(p)| = K = min(256,M),
+           floor_mass/K <= p_j <= min(1,4/K) on support,
+           actual cosine relative error <= 0.05
 ```
 
-保留 32–256 非零维，固定总正权重 floor mass=1e-4，零行候选无效；P 全零时 variability 项为零。Simplex 防止权重整体趋零；cardinality 惩罚不是 simplex 上恒为常数的 L1。目标与候选池定义见 [v12 实现](COSINE_UVARFS_UPGRADE.md)，固定支持精修见 [v14 记录](FIXED_SUPPORT_POLISH.md)，当前支持缩小与证书边界见 [v15 删维](OBJECTIVE_DELETION_PRUNING.md)。
+不扫 Main lambda 或优先减少维数。固定原最大预算256、floor mass=1e-4，零行候选无效；P 全零时 variability 项为零。有限生成池先筛正常几何可行候选，再比较正常目标；无可行候选时明确 fallback。权重 cap 限制系数集中，固定支持残差使用 capped simplex，不证明全局稀疏最优或检测收益。精确定义见 [性能优先协议](PERFORMANCE_FIRST.md)。
+
+原 `cosine_simplex_cardinality` 的32–256维 lambda/剪枝策略保留为 `asls_compression_uvarfs`；历史目标/固定支持精修/删维见 [v12 实现](COSINE_UVARFS_UPGRADE.md)、[v14 记录](FIXED_SUPPORT_POLISH.md)、[v15 删维](OBJECTIVE_DELETION_PRUNING.md)。
 
 下文保留原 quadratic 数学定义，当前仅用于完整 `gram_*` 控制。
 

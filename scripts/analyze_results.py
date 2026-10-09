@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from uvarfs.representation import normalization_modes, normalization_prefix
-from uvarfs.objectives import COSINE, QUADRATIC, experiment_branches
+from uvarfs.objectives import COSINE, QUADRATIC, PERFORMANCE, experiment_branches
 from uvarfs.selection_diagnostics import cosine_feasibility_diagnostics
 
 DATASETS = ['brain','liver','resc','oct2017','xray','camelyon16']
@@ -99,6 +99,8 @@ def markdown_table(frame, columns):
 
 def audit_sparse_path(result, cfg):
     """Verify normal-only budget guards, independently of anomaly metrics."""
+    if result.get('objective_definition')==PERFORMANCE:
+        return audit_performance_path(result,cfg)
     if result.get('objective_definition')==COSINE:
         return audit_cosine_path(result,cfg)
     path=result['lambda_path']
@@ -371,6 +373,93 @@ def audit_cosine_path(result,cfg):
             **cosine_feasibility_diagnostics(result,cfg)}
 
 
+def audit_performance_path(result,cfg):
+    """Verify the fixed budget/cap and normal-only finite-pool selection."""
+    dimension=len(result['weights']); count=min(int(cfg['max_features']),dimension)
+    cap=float(cfg.get('performance_weight_cap_factor',4.)); floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
+    tolerance=float(cfg['geometry_tolerance']); manifest=result['solver_manifest']
+    expected={'fixed_features':count,'weight_floor_mass':floor,'weight_cap_factor':cap,
+        'initializations':['original_gram','normal_energy','original_gram_selected_expanded'],
+        'candidate_types':['uniform_reference','optimized'],
+        'selection_metric':'normal_feasibility_then_representation_plus_variability',
+        'geometry_chunk':cfg.get('cosine_geometry_chunk',512),
+        'refit_max_iter':cfg.get('cosine_refit_max_iter',cfg['max_iter']),
+        'polish_max_iter':cfg.get('cosine_polish_max_iter',200),'polish_ftol':cfg.get('cosine_polish_ftol',1e-12),
+        'exchange_max_steps':cfg.get('cosine_exchange_max_steps',8),'exchange_candidates':cfg.get('cosine_exchange_candidates',8),
+        'exchange_min_improvement':cfg.get('support_exchange_min_improvement',1e-8),
+        'line_search_steps':cfg.get('cosine_line_search_steps',20),'initial_step':cfg.get('cosine_initial_step',.05),
+        'tolerance':cfg['tol'],'zero_row_rule':'candidate invalid; never normalized with epsilon',
+        'stability_reference':'uniform full-input relative weights'}
+    if any(manifest.get(k)!=v for k,v in expected.items()):
+        raise ValueError('performance-first manifest differs from fixed constraints')
+    if (result['lambda_optimization_scope']!='not_used_fixed_budget' or result['lambda']!=0. or
+        result['sparsity_term']!=0. or result['lambda_at_grid_boundary'] is not False or
+        result['objective_certificate_scope']!='fixed_support_first_order_only_nonconvex' or
+        result['geometry_metric']!='actual_cosine_gram_relative_frobenius' or
+        result['global_optimality_claimed'] is not False or result.get('box_optimality_gap') is not None or
+        result.get('budget_geometry_audit') is not None or result['selection_policy']!='fixed_budget_feasible_objective'):
+        raise ValueError('performance-first objective/selection scope is inconsistent')
+    pool=result['candidate_pool']; polishes=[]; iterations=0
+    if not pool: raise ValueError('empty performance-first candidate pool')
+    for index,c in enumerate(pool):
+        w=np.asarray(c['weights'],dtype=float);active=np.asarray(c['active'],dtype=int)
+        if (w.shape!=(dimension,) or not np.isfinite(w).all() or (w<0).any() or
+            c['candidate_id']!=index or c['retained_features']!=count or c['nonzero_features']!=count or
+            len(active)!=count or not np.array_equal(np.flatnonzero(w>0),active) or
+            not np.isclose(w.sum(),1,atol=1e-6) or w[active].min()<floor/count-1e-9 or
+            w.max()>min(1.,cap/count)+1e-7 or c['zero_norm_rows']!=0 or
+            c['source'] not in expected['initializations'] or c['candidate_type'] not in expected['candidate_types']):
+            raise ValueError('performance-first support/capped weights violate constraints')
+        if (not np.isfinite([c[k] for k in ['base_objective','geometry_error','representation_term','variability_term','fixed_support_first_order_residual']]).all() or
+            not np.isclose(c['base_objective'],c['representation_term']+c['variability_term'],atol=1e-9) or
+            not np.isclose(c['representation_term'],.5*c['geometry_error']**2,atol=1e-9) or
+            not np.isclose(c['variability_term'],cfg['beta']*c['relative_variability'],atol=1e-8) or
+            not np.isclose(c['effective_weight_dimension'],1/np.square(w).sum(),atol=1e-6) or
+            not np.isclose(c['maximum_relative_weight'],w.max(),atol=1e-9) or
+            c['effective_weight_dimension']+1e-5<count/min(cap,count) or
+            c['fixed_support_converged']!=(c['fixed_support_first_order_residual']<=cfg['tol'])):
+            raise ValueError('performance-first objective/weight diagnostics disagree')
+        if c['candidate_type']=='uniform_reference':
+            if c['initial_refit'] is not None or c['exchange_history'] or not np.allclose(w[active],1/count,atol=1e-8):
+                raise ValueError('performance-first uniform reference was refitted')
+        else:
+            refits=[c['initial_refit']]+[e['refit'] for e in c['exchange_history']]
+            for r in refits:
+                polishes.append(audit_cosine_refit(r,cfg));iterations+=r['solver_iterations']
+            for e in c['exchange_history']:
+                if e['after']>=e['before'] or e['removed']==e['added']:
+                    raise ValueError('performance-first exchange does not improve the normal objective')
+    eligible=[c for c in pool if c['geometry_error']<=tolerance]
+    chosen=min(eligible,key=lambda c:(c['base_objective'],c['geometry_error'],c['candidate_id'])) if eligible else min(pool,key=lambda c:(c['geometry_error'],c['base_objective'],c['candidate_id']))
+    if (result['candidate_id']!=chosen['candidate_id'] or result['feasible']!=bool(eligible) or
+        result['selection_reason']!=('fixed_budget_best_feasible_objective' if eligible else 'minimum_geometry_error_fallback') or
+        len(result['lambda_path'])!=1 or result['lambda_path'][0]['candidate_id']!=chosen['candidate_id'] or
+        result['solver_iterations']!=iterations or result['weight_cap_factor']!=cap or
+        not np.isclose(result['effective_dimension_lower_bound'],count/min(cap,count)) or
+        result['solver_converged']!=chosen['fixed_support_converged']):
+        raise ValueError('performance-first chosen point violates its normal-only rule')
+    for key in ['active','weights','budgeted_weights']:
+        np.testing.assert_array_equal(result[key],chosen['active'] if key=='active' else chosen['weights'])
+    np.testing.assert_allclose(np.square(result['scales']),np.asarray(chosen['weights'])[chosen['active']],rtol=1e-6,atol=1e-9)
+    for key in ['geometry_error','fixed_support_first_order_residual','effective_weight_dimension','maximum_relative_weight','base_objective']:
+        if not np.isclose(result[key],chosen[key],atol=1e-10):
+            raise ValueError('performance-first selected fields differ from candidate')
+    for key in ['lambda','objective','sparsity_term','feasible','retained_features','geometry_error','candidate_id']:
+        if result['lambda_path'][0][key]!=result[key]:
+            raise ValueError('performance-first reporting point differs from selected result')
+    if not np.isclose(result['objective'],chosen['base_objective'],atol=1e-10):
+        raise ValueError('performance-first selected objective differs')
+    totals={'attempts':sum(d['attempted'] for d in polishes),'accepted':sum(d['accepted'] for d in polishes),
+        'iterations':sum(d['iterations'] for d in polishes),'objective_evaluations':sum(d['objective_evaluations'] for d in polishes),
+        'seconds':sum(d['seconds'] for d in polishes)}
+    if any(not np.isclose(result['polish_summary'][k],v,atol=1e-10) for k,v in totals.items()):
+        raise ValueError('performance-first costs omit refit/polish work')
+    return {'points':1,'candidate_pool_size':len(pool),'selected_nonzero_features':count,
+            'objective_definition':PERFORMANCE,'certificate_scope':result['objective_certificate_scope'],
+            'selection_and_guards_verified':True,'global_optimality_claimed':False,
+            **cosine_feasibility_diagnostics(result,cfg)}
+
+
 def audit_representation_protocol(folder, cfg, frame, primary_fit):
     """Paired input branches must share data and perturbations, not feature values."""
     if 'representation' not in cfg:
@@ -438,9 +527,22 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
             if 'support_source_method' in own_rows and (own_rows.loc[prefix+'asls_selected_raw'].support_source_method!=own or
                 own_rows.loc[prefix+'asls_selected_raw'].representation_weighting!='uniform_on_main_support'):
                 raise ValueError('selected-support CSV source/weighting differs')
-        if branch['objective']==COSINE and not np.isclose(u['geometry_error'],normal['methods']['main']['vs_selected_input_cosine']['cosine_gram_relative_error'],atol=2e-6,rtol=1e-5):
+        if 'asls_compression_uvarfs' in cfg['methods']:
+            compression=json.loads((output/'uvarfs_asls_compression.json').read_text())
+            diag=normal['methods']['asls_compression_uvarfs']
+            if (compression['objective_definition']!=COSINE or compression['layers']!=u['layers'] or
+                compression['layer_normalization']!=mode or diag['layers']!=u['layers'] or
+                diag['feature_dim']!=len(compression['active']) or
+                not np.isclose(compression['geometry_error'],diag['vs_selected_input_cosine']['cosine_gram_relative_error'],atol=2e-6,rtol=1e-5)):
+                raise ValueError('compression control differs from same-input ASLS/cosine protocol')
+            if 'feature_dim' in own_rows and own_rows.loc[prefix+'asls_compression_uvarfs'].feature_dim!=len(compression['active']):
+                raise ValueError('compression control CSV dimension differs from support')
+            if 'uvarfs_objective_definition' in own_rows and own_rows.loc[prefix+'asls_compression_uvarfs'].uvarfs_objective_definition!=COSINE:
+                raise ValueError('compression control CSV objective differs')
+            audit_sparse_path(compression,cfg['uvarfs'])
+        if branch['objective'] in {COSINE,PERFORMANCE} and not np.isclose(u['geometry_error'],normal['methods']['main']['vs_selected_input_cosine']['cosine_gram_relative_error'],atol=2e-6,rtol=1e-5):
             raise ValueError('cosine selection geometry disagrees with actual detector representation')
-        if branch['objective']==COSINE and 'uvarfs_feasibility_scope' in own_rows:
+        if branch['objective'] in {COSINE,PERFORMANCE} and 'uvarfs_feasibility_scope' in own_rows:
             expected=cosine_feasibility_diagnostics(u,cfg['uvarfs'])
             for key,value in expected.items():
                 column='uvarfs_'+key
@@ -458,8 +560,9 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
                         'budget_geometry_audit':u.get('budget_geometry_audit'),
                         'normal_cosine_geometry':normal})
     for objectives in fitted_by_input.values():
-        if COSINE in objectives and QUADRATIC in objectives:
-            new,old=objectives[COSINE],objectives[QUADRATIC]
+        new_objective=PERFORMANCE if PERFORMANCE in objectives else COSINE
+        if new_objective in objectives and QUADRATIC in objectives:
+            new,old=objectives[new_objective],objectives[QUADRATIC]
             if new['original_gram_selected_dimension']!=len(old['active']) or new['original_gram_selected_active']!=sorted(old['active']):
                 raise ValueError('cosine warm start disagrees with original same-input control')
     return records
@@ -551,7 +654,7 @@ def audit_fit_only(results,output):
                 'effective_weight_dimension':obj.get('effective_weight_dimension'),
                 'candidate_count':len(pool),'stationary_candidates':sum(c['fixed_support_converged'] for c in pool),
                 'line_search_stalled_candidates':sum(c['solver_status']=='line_search_stalled' for c in pool),
-                **(cosine_feasibility_diagnostics(obj,cfg['uvarfs']) if obj.get('objective_definition')==COSINE else {})})
+                **(cosine_feasibility_diagnostics(obj,cfg['uvarfs']) if obj.get('objective_definition') in {COSINE,PERFORMANCE} else {})})
         datasets.append({'dataset':dataset,'solver_files_checked':len(solver_files),
             'git_blob_code_verified':verify_recorded_code(metadata),'git_head':metadata['git_head'],
             'memory_manifest_available':memory_available,'evaluation_progress':json.loads((folder/'eval_progress.json').read_text(encoding='utf-8')) if (folder/'eval_progress.json').exists() else None,
@@ -653,7 +756,7 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_raw':[f'randomk_raw_seed{s}' for s in seeds],
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
-        for method in ['asls_selected_raw','all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
+        for method in ['asls_compression_uvarfs','asls_selected_raw','all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
                        'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','legacy_main',
                        'layer_l2_main','raw_input_main','gram_main']:
             if method in source.method.values:
@@ -671,12 +774,12 @@ def audit(results: Path, output: Path, draws: int):
         for branch in branches[1:]:
             prefix=branch['prefix']; target=prefix+'main'
             groups={prefix+family:[prefix+family] for family in [
-                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','asls_selected_raw','legacy_main',
+                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','asls_compression_uvarfs','asls_selected_raw','legacy_main',
                 'asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs'] if prefix+family in source.method.values}
             groups.update({prefix+family:[f'{prefix}{family}_seed{s}' for s in seeds]
                            for family in ['randomk_raw','randomk_uvarfs','asls_random']})
             controls=[other for other in branches if other['layer_normalization']==branch['layer_normalization'] and other['objective']==QUADRATIC]
-            if branch['objective']==COSINE and controls:
+            if branch['objective'] in {COSINE,PERFORMANCE} and controls:
                 control=controls[0]['prefix']+'main'; groups[control]=[control]
             intervals=paired_bootstrap(predictions,groups,draws=draws,target=target)
             for family,methods in groups.items():
@@ -784,7 +887,7 @@ def audit(results: Path, output: Path, draws: int):
     except (OSError,subprocess.CalledProcessError):
         data['git_blob_code_verified']=False
     (output/'analysis_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
-    report=write_report if versions[0]=='gpu-eval-v4-protocol-fixes' else write_cosine_report if diagnostics[0]['objective_definition']==COSINE else write_current_report
+    report=write_report if versions[0]=='gpu-eval-v4-protocol-fixes' else write_cosine_report if diagnostics[0]['objective_definition'] in {COSINE,PERFORMANCE} else write_current_report
     report(output,df,summary,pd.DataFrame(paired_rows),pd.DataFrame(prevalence_rows),data)
 
 
@@ -796,7 +899,7 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda value:f'{value*100:.2f}' if pd.notna(value) else 'n.a.')
     comparisons=pd.DataFrame({'dataset':DATASETS})
-    for family in ['main','gram_main','asls_raw','asls_pca','asls_selected_raw','gram_asls_selected_raw','layer_l2_asls_selected_raw','layer_l2_gram_asls_selected_raw','asls_random','fixed4_raw','all_raw','all_uvarfs',
+    for family in ['main','gram_main','asls_compression_uvarfs','layer_l2_asls_compression_uvarfs','asls_raw','asls_pca','asls_selected_raw','gram_asls_selected_raw','layer_l2_asls_selected_raw','layer_l2_gram_asls_selected_raw','asls_random','fixed4_raw','all_raw','all_uvarfs',
                    'gram_asls_pca','gram_asls_random','layer_l2_main','layer_l2_gram_main','layer_l2_asls_raw']:
         if family not in macro:
             continue
@@ -819,11 +922,11 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
                 'effective_weight_dimension':own.get('uvarfs_effective_weight_dimension'),
                 'continuous_box_gap':own.get('uvarfs_box_optimality_gap')})
             sparse=record['sparse_path_audit']
-            if record['objective_definition']==COSINE:
+            if record['objective_definition'] in {COSINE,PERFORMANCE}:
                 feasibility_rows.append({'dataset':diagnostic['dataset'],'method':record['method'],
                     **{k:sparse[k] for k in ['generated_feasible_candidates','lambda_path_feasible_points',
                        'generated_min_geometry_error','generated_sparsest_feasible_dimension',
-                       'feasibility_diagnosis','global_budget_infeasibility_claimed']}})
+                       'feasibility_diagnosis','feasibility_scope','global_budget_infeasibility_claimed']}})
             control=record['normal_cosine_geometry']['methods'].get('asls_selected_raw')
             if control is not None:
                 control_rows.append({'dataset':diagnostic['dataset'],'source_main':record['method'],
@@ -861,10 +964,16 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
         f'Git blobs 与保存 code fingerprint 核验：{data["git_blob_code_verified"]}。全局/逐数据集 CSV、逐图 AUROC/AP、随机 mean/sample SD、全部正常清单、ASLS 共享和方法维数核验通过。原始文件 SHA256 在 analysis_data.json，读取前后保持。', '',
         '原始输入 Main 固定，完整 L2 消融保留；本轮目标升级授权不等于 L2 Main 切换。旧结果不能 resume 或混入当前版本。性能变化需由全部六数据集和 Brain/Liver/RESC localization 一起评估，不能把数学或 fixture 通过当作正向 AD 效果。', '',
         '实验产物与本报告仅保留本地；代码与开发交接按默认授权同步仓库。', '']
+    if PERFORMANCE in set(df.get('uvarfs_objective_definition',[])):
+        lines=[line.replace('Cosine/simplex U-VaRFS 全六回传分析','性能优先 U-VaRFS 全六回传分析') for line in lines]
+        lines=[line for line in lines if not line.startswith(('cosine_simplex_cardinality 的 feasible','新目标非凸且包含离散支持。'))]
+        lines+=['## 性能优先协议','',
+            'Main 使用 cosine_simplex_fixed_budget：固定既定最大 K，保留原正常 cosine/variability 项，权重 floor/K≤p≤4/K（具体 cap 以 config 为准），不扫 lambda 或优先减少维数。有限候选池先满足正常几何约束，再比较正常完整目标；没有可行候选时明确 fallback，不宣称预算全局不可行。', '',
+            '旧 cosine/cardinality/lambda Main 以 asls_compression_uvarfs 单独保留，原 quadratic 仍是完整 gram_* 分支。same-support/PCA/Random 匹配各支 Main K。权重 cap 的有效维数下界只限制系数集中，不证明异常 AUROC/AUPRO 改善或独立信息维数。', '']
     if feasibility_rows:
         frame=pd.DataFrame(feasibility_rows); frame.to_csv(output/'cosine_feasibility_scope.csv',index=False)
         lines+=['## 有限候选池与 lambda 路径可行性','',markdown_table(frame.round(7),frame.columns.tolist()),'',
-                'feasible 只评价规定 lambda 路径上的完整目标最小点。候选池中可能有满足几何容差的支持，却没有被路径选中。无可行路径点或无可行生成候选都不证明全部预算内支持不可行；不越过原 lambda 选择规则直接替换 Main。','']
+                '原 cosine/cardinality 控制的 feasible 评价规定 lambda 路径最优点；performance-first 的 feasible 评价固定 K 生成池，且不做 lambda 搜索（路径数量为缺省）。两种有限集合都不证明全局预算不可行，报告以 feasibility_scope 区分。','']
     if control_rows:
         frame=pd.DataFrame(control_rows); frame.to_csv(output/'selected_support_geometry.csv',index=False)
         lines+=['## 相同支持去权重对照','',markdown_table(frame.round(7),frame.columns.tolist()),'',
