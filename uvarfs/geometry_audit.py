@@ -50,9 +50,9 @@ def audit_normal_geometry(patches, specs, layer_normalization='none'):
 
     ASLS uses equal-weight unit-layer Grams; downstream concatenates features
     in the declared input convention (raw or unit-layer L2).
-    U-VaRFS preserves an unrenormalized weighted Gram; the detector renormalizes
-    rows. Record these different quantities instead of treating their tolerances
-    as a guarantee of normal nearest-neighbor preservation.
+    Main preserves actual cosine geometry; the quadratic controls preserve an
+    unrenormalized weighted Gram. The detector renormalizes rows. Record these
+    distinct quantities; Gram error is not a nearest-neighbor guarantee.
     """
     layers=sorted(patches)
     joined=torch.cat([patches[l] for l in layers],dim=1).float()
@@ -79,7 +79,7 @@ def audit_normal_geometry(patches, specs, layer_normalization='none'):
             'unit_layer_consensus_vs_raw_full_cosine_error':mismatch,
             'layer_patch_norms':{str(l):describe_norms(patches[l]) for l in layers},
             'methods':{}}
-    targets=['main','asls_raw','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','asls_top_weights_uvarfs',
+    targets=['main','asls_raw','asls_selected_raw','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','asls_top_weights_uvarfs',
              'asls_gate_prefix_raw','asls_gate_prefix_uvarfs','legacy_main']
     for name in targets:
         if name not in specs:
@@ -87,6 +87,9 @@ def audit_normal_geometry(patches, specs, layer_normalization='none'):
         spec=specs[name]
         x=torch.cat([patches[l] for l in spec['layers']],dim=1).float()
         representation=apply_uvarfs(x,spec['obj']) if spec['kind']=='uvarfs' else x
+        if spec['kind']=='selected_raw':
+            indices=torch.as_tensor(spec['obj']['active'],device=x.device,dtype=torch.long)
+            representation=x.index_select(1,indices)
         diagnostic={'layers':spec['layers'],'feature_dim':representation.shape[1],
                     'vs_raw_full_hierarchy':compare_gram(raw_gram,representation),
                     'vs_unit_layer_consensus':compare_gram(consensus,representation)}
@@ -101,5 +104,13 @@ def audit_normal_geometry(patches, specs, layer_normalization='none'):
             diagnostic['selection_geometry_metric']=metric
             diagnostic['selection_geometry_error']=spec['obj']['geometry_error']
             diagnostic['unrenormalized_weighted_gram_error']=spec['obj']['geometry_error'] if metric=='unrenormalized_weighted_gram_relative_frobenius' else None
+        if spec['kind']=='selected_raw':
+            selected=F.normalize(x,dim=1)
+            diagnostic['vs_selected_input_cosine']=compare_gram(selected@selected.T,representation)
+            main=apply_uvarfs(x,specs['main']['obj'])
+            normalized_main=F.normalize(main,dim=1)
+            diagnostic['vs_weighted_main_cosine']=compare_gram(normalized_main@normalized_main.T,representation)
+            diagnostic['support_source_method']=spec['support_source_method']
+            diagnostic['representation_weighting']=spec['representation_weighting']
         result['methods'][name]=diagnostic
     return result

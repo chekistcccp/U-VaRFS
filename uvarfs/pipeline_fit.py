@@ -157,7 +157,7 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
     return patches, var_vectors, asls
 
 
-def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None, gram_cache=None):
+def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None, gram_cache=None, method_prefix=''):
     patches, variabilities, asls = fit_representation(extractor, train_samples, cfg, dataset_out,collected)
     input_mode,_=normalization_modes(cfg)
     selected = asls["selected_layers"]
@@ -231,6 +231,18 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         "fixed4_uvarfs": {"layers": fixed, "kind": "uvarfs", "obj": fixed_uv},
         "all_uvarfs": {"layers": all_layers, "kind": "uvarfs", "obj": all_uv},
     }
+    if 'asls_selected_raw' in enabled:
+        # Copy the fitted Main support, never rerank, refit or use test data.
+        control={'layers':list(selected),'active':[int(j) for j in main_uv['active']],
+                 'source_main':method_prefix+'main','source_objective':objective,
+                 'layer_normalization':input_mode,'feature_dim':len(main_uv['active']),
+                 'kind':'main_support_without_relative_weights',
+                 'representation_weighting':'uniform_on_main_support',
+                 'extra_fit':False,'selection_candidate':False}
+        save_json(control,dataset_out/'selected_support_control.json')
+        specs['asls_selected_raw']={'layers':list(selected),'kind':'selected_raw',
+            'obj':control,'support_source_method':control['source_main'],
+            'representation_weighting':control['representation_weighting']}
     for mode,selection in asls['geometry_comparisons'].items():
         layers=selection['selected_layers']
         if f'asls_{mode}_raw' in enabled:
@@ -304,7 +316,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
             v['objective_branch']=objective
             if v['kind']=='uvarfs':
                 v['uvarfs_objective']=v['obj'].get('objective_definition',QUADRATIC)
-            if k in {'main','asls_raw','asls_pca'} or base=='asls_random':
+            if k in {'main','asls_raw','asls_pca','asls_selected_raw'} or base=='asls_random':
                 v['asls_geometry']=asls['geometry_comparisons'][asls['geometry_representation']]
             keep[k] = v
     print('[fit] normal cosine geometry audit (diagnostic only)',flush=True)
@@ -323,7 +335,7 @@ def fit_all_method_specs(extractor, train_samples, cfg, dataset_out):
         settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None},
                   'uvarfs':{**cfg['uvarfs'],'objective':branch['objective'],'ablation_objective':None}}
         output=dataset_out/branch['folder']
-        fitted=fit_method_specs(extractor,train_samples,settings,output,collected,caches[mode])
+        fitted=fit_method_specs(extractor,train_samples,settings,output,collected,caches[mode],method_prefix=prefix)
         specs.update({prefix+name:spec for name,spec in fitted.items()})
     save_json({'primary_layer_normalization':primary,
                'ablation_layer_normalization':modes[1] if len(modes)>1 else None,

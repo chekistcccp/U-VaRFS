@@ -14,6 +14,7 @@ from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 from uvarfs.representation import normalization_modes, normalization_prefix
 from uvarfs.objectives import experiment_branches, COSINE
 
+from uvarfs.selection_diagnostics import cosine_feasibility_diagnostics
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
                              code_fingerprint,data_fingerprint,expected_method_names,completed_result_compatible,validate_results_version)
 
@@ -122,6 +123,9 @@ def main():
                 'normal_geometry_audit.json','representation_manifest.json'))
             compatible=compatible and all((out/branch['folder']/name).is_file()
                 for branch in experiment_branches(cfg) for name in ['asls.json','fit_manifest.json','uvarfs_main.json','normal_geometry_audit.json'])
+            if 'asls_selected_raw' in cfg['methods']:
+                compatible=compatible and all((out/branch['folder']/'selected_support_control.json').is_file()
+                    for branch in experiment_branches(cfg))
             if compatible:
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
@@ -199,11 +203,16 @@ def main():
                 asls_geometry_error=spec.get('asls_geometry',{}).get('geometry_error'),
                 asls_discrete_selection=spec.get('asls_geometry',{}).get('discrete_selection'),
             )
+            if spec['kind']=='selected_raw':
+                r.update(support_source_method=spec['support_source_method'],
+                         representation_weighting=spec['representation_weighting'])
             if spec['kind']=='uvarfs':
                 obj=spec['obj']
                 r.update(uvarfs_objective_definition=obj.get('objective_definition','quadratic_gram'),
                          uvarfs_geometry_metric=obj.get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius'))
                 if obj.get('objective_definition')==COSINE:
+                    feasibility=cosine_feasibility_diagnostics(obj,cfg['uvarfs'])
+                    r.update({f'uvarfs_{key}':value for key,value in feasibility.items()})
                     r.update(uvarfs_geometry_error=obj['geometry_error'],uvarfs_geometry_feasible=obj['feasible'],
                         uvarfs_solver_converged=obj['solver_converged'],uvarfs_selected_lambda=obj['lambda'],
                         uvarfs_objective=obj['objective'],uvarfs_objective_certificate_scope=obj['objective_certificate_scope'],

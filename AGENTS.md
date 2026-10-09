@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前工程状态见第 40 节（v15 有限删维求解修正）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
+> **当前工程状态见第 41 节（v16 同支持权重消融与可行性诊断）**。主方法仍是第 37 节已批准的 cosine/simplex U-VaRFS；第 5.2 节原公式作为完整 `gram_*` 控制保留，当前主目标见第 5.4/37 节。raw Main 与 L2 消融保留，L2 Main 切换不在本次批准内。较早交接保留历史语境。
 
 ---
 
@@ -829,7 +829,7 @@ run.sh
 当前 experiment version：
 
 ```text
-gpu-eval-v15-objective-deletion-pruning
+gpu-eval-v16-weighting-control
 ```
 
 原因：
@@ -947,7 +947,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v15-objective-deletion-pruning
+experiment_version = gpu-eval-v16-weighting-control
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1156,7 +1156,7 @@ Codex 接手后优先级：
    - ASLS 有日志；
    - cosine/refit、候选 feasible/残差/有效维数和原 batched FISTA 控制有日志；
    - PCA GPU fit 有日志；
-   - 四支正常 manifest、152 方法与 memory/test 正常；
+   - 四支正常 manifest、156 方法与 memory/test 正常；
 5. Liver 完成后再全 6 benchmark；
 6. 再考虑双 3090 dataset-level parallel runner；
 7. 结果稳定后补缺失 baseline 与论文图表。
@@ -1410,7 +1410,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 40. 2026-10-09 v15 有限删维求解修正（当前工程状态）
+# 40. 2026-10-09 v15 有限删维求解修正（历史工程交接）
 
 版本 `gpu-eval-v15-objective-deletion-pruning`，独立输出 `results/gpu-eval-v15-objective-deletion-pruning/`。Main 仍为第 5.4/37 节已批准的 cosine/simplex/cardinality 目标与 raw 输入；详细实现与第 19 节检查见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)。回传指标、分析、图表按第 28 节仅留本地，不写入本开发交接。
 
@@ -1421,3 +1421,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 原 CosineObjective/解析梯度、投影/floor、SLSQP 精修、refit/交换、候选 K、lambda 有限池选择/实际几何容差、ASLS、Frozen backbone、raw Main/L2 消融、四支 152 方法/五 seeds、正常 fit/variability/memory/维度预算、beta/lambda、detector/Top-1%/pixel 定义保持。原 quadratic/v11 与同维 PCA/Random 保留完整。
 - v15 独立目录与新指纹，不覆盖、混合或续接旧结果。分析兼容 v12/v14 无新字段记录，新配置缺 manifest 拒绝；v13 评价收尾与版本保护继续保留。
 - 149 项完整本地检查通过，6 CUDA 检查因缺 runtime 跳过；两种 primary 的 152 方法与同数据原控制、有限删除 oracle、联合 guard/floor/zero-row/成本/父子链接/历史审计通过。v12/v14 48 个主分支复核通过，748/753 个原文件保持。本机缺真实 BMAD/模型/CUDA；真实 v15 性能待服务器先 Liver、再固定设计全六。
+
+
+---
+
+# 41. 2026-10-09 v16 同支持权重消融与可行性诊断（当前工程状态）
+
+版本 `gpu-eval-v16-weighting-control`；新目录 `results/gpu-eval-v16-weighting-control/`。Main 保持第 5.4/37 节已批准目标与 raw 输入，v15 solver 原样保留。详细定义、第 19 节检查与运行见 [WEIGHTING_CONTROL.md](WEIGHTING_CONTROL.md)。回传 CSV/JSON、分析/图表/日志依第 28 节仅留本地，不写入本开发交接。
+
+- 新增四支 `asls_selected_raw` 固定支持 weighting ablation：复用各支 Main 有序层、active 与 K，去相对权重，不重新拟合/选维或增加 normal 数据/forward。原 152 方法和五 seeds 保留，默认 156 方法、全六 936 行。
+- 控制与 Main 共享原 memory 抽样、cosine 1-NN/Top-1%/pixel protocol；新增工作纳入共享整套成本。artifact/CSV 明确源方法；报告核验 exact support 和正常几何，比较同支持异常指标，结果不用于 Main 或超参选择。
+- 正常只读诊断区分可行生成候选与可行 lambda-path 完整目标最小点。无可行路径不等于预算内无可行支持；原规则/fallback 不变，不放宽容差、延伸 grid 或直接选池可行解，不宣称全局预算不可行。
+- ASLS、两目标全部 solver、Frozen backbone、全部层候选、raw/L2、normal fit/variability/memory/维度预算、beta/lambda/floor/geometry 与 detector 保持。L2 Main 切换不在授权内。
+- 新版本不覆盖/混合 v15，resume 还须有四个控制 artifact。代码/配置/测试/开发交接依第 28 节提交推送；实验产物仅留本地。
+
+157 项完整本地检查通过，6 项 CUDA 检查因缺 runtime 跳过。两种 primary 下新增控制前后原 152 方法支持/scales、共享 fit/扰动/memory 清单、memory 值、逐图预测及 image/pixel 点估计一致；四支控制身份、错配/CSV scope 拒绝、报告与完整 resume 通过。ASLS、两 solver、variability、detector、metrics/backbone 源码和全部 Main 设置逐项对照保持；shell/diff 检查通过。历史版本报告兼容，源产物未改写。真实 BMAD/模型/CUDA 不在本机；服务器先 Liver 验证运行，再固定配置全六；新同支持对照尚无真实回传性能。

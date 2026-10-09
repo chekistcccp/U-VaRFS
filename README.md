@@ -1,5 +1,5 @@
 > **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **当前实现版本：`gpu-eval-v15-objective-deletion-pruning`**。Main 保持已批准的 cosine/simplex/cardinality 目标与 raw 输入。本轮以同目标有限删除 loss 提出较小支持，对完整新旧提案作实际目标比较，严格改善才采用；原一阶提案保留。ASLS、原 Gram 控制、raw/L2 四支 152 方法、正常数据/维度/memory 预算和 detector 保持。当前算法、成本与边界见 [OBJECTIVE_DELETION_PRUNING.md](OBJECTIVE_DELETION_PRUNING.md)，v14 精修与 v13 评价收尾继续保留。
+> **当前实现版本：`gpu-eval-v16-weighting-control`**。Main 保持已批准的 cosine/simplex/cardinality 目标与 raw 输入，v15 solver 原样保留。新增四支同 Main 支持、去相对权重的 `asls_selected_raw` 消融，默认 156 方法；只读诊断区分生成池与 lambda 路径可行性，不改选解。原全部控制、五 seeds、正常数据/表示/memory 预算和 detector 保持。定义与运行见 [WEIGHTING_CONTROL.md](WEIGHTING_CONTROL.md)，v15 删维、v14 精修与 v13 评价收尾继续保留。
 
 原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；v12 目标变更授权仅覆盖上述 U-VaRFS 数学升级，v14/v15 在该目标内改进数值求解。
 

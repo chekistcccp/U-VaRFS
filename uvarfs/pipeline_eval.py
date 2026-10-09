@@ -42,8 +42,9 @@ def transform(feats,spec,concat_cache=None):
         x=apply_uvarfs(x,spec['obj'])
     elif kind=='pca':
         x=apply_pca(x.reshape(-1,x.shape[-1]),spec['obj']).reshape(x.shape[0],x.shape[1],-1)
-    elif kind=='random':
-        idx=torch.as_tensor(spec['obj'],device=x.device,dtype=torch.long)
+    elif kind in {'random','selected_raw'}:
+        active=spec['obj']['active'] if kind=='selected_raw' else spec['obj']
+        idx=torch.as_tensor(active,device=x.device,dtype=torch.long)
         x=x.index_select(-1,idx)
     return F.normalize(x.float(),dim=-1)
 

@@ -20,6 +20,7 @@ import pandas as pd
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from uvarfs.representation import normalization_modes, normalization_prefix
 from uvarfs.objectives import COSINE, QUADRATIC, experiment_branches
+from uvarfs.selection_diagnostics import cosine_feasibility_diagnostics
 
 DATASETS = ['brain','liver','resc','oct2017','xray','camelyon16']
 PIXEL_DATASETS = {'brain','liver','resc'}
@@ -366,7 +367,8 @@ def audit_cosine_path(result,cfg):
     np.testing.assert_allclose(np.square(result['scales']),np.asarray(chosen['weights'])[chosen['active']],rtol=1e-6,atol=1e-9)
     return {'points':len(path),'candidate_pool_size':len(pool),'selected_nonzero_features':selected['nonzero_features'],
             'objective_definition':COSINE,'certificate_scope':result['objective_certificate_scope'],
-            'selection_and_guards_verified':True,'polish_guards_verified':polished,'pruning_guards_verified':pruned,'global_optimality_claimed':False}
+            'selection_and_guards_verified':True,'polish_guards_verified':polished,'pruning_guards_verified':pruned,'global_optimality_claimed':False,
+            **cosine_feasibility_diagnostics(result,cfg)}
 
 
 def audit_representation_protocol(folder, cfg, frame, primary_fit):
@@ -416,11 +418,40 @@ def audit_representation_protocol(folder, cfg, frame, primary_fit):
         own_rows=frame.set_index('method')
         if 'feature_dim' in own_rows and len(u['active'])!=own_rows.loc[own].feature_dim:
             raise ValueError('main CSV dimension disagrees with fitted support')
-        for name in ['asls_pca']+[f'asls_random_seed{s}' for s in cfg.get('random_baseline_seeds',[cfg['seed']])]:
+        for name in ['asls_pca','asls_selected_raw']+[f'asls_random_seed{s}' for s in cfg.get('random_baseline_seeds',[cfg['seed']])]:
             if 'feature_dim' in own_rows and prefix+name in own_rows.index and own_rows.loc[prefix+name].feature_dim!=len(u['active']):
                 raise ValueError('PCA/Random feature dimension differs from its own objective branch')
+        if 'asls_selected_raw' in cfg['methods']:
+            control=json.loads((output/'selected_support_control.json').read_text())
+            if (control['source_main']!=own or control['source_objective']!=branch['objective'] or
+                control['layer_normalization']!=mode or control['layers']!=u['layers'] or
+                control['active']!=u['active'] or control['feature_dim']!=len(u['active']) or
+                control['kind']!='main_support_without_relative_weights' or
+                control['representation_weighting']!='uniform_on_main_support' or
+                control['extra_fit'] is not False or control['selection_candidate'] is not False):
+                raise ValueError('selected-support control differs from its own Main')
+            diagnostic=normal['methods']['asls_selected_raw']
+            if (diagnostic['feature_dim']!=len(u['active']) or diagnostic['layers']!=u['layers'] or
+                diagnostic['support_source_method']!=own or
+                diagnostic['representation_weighting']!='uniform_on_main_support'):
+                raise ValueError('selected-support geometry differs from its own Main')
+            if 'support_source_method' in own_rows and (own_rows.loc[prefix+'asls_selected_raw'].support_source_method!=own or
+                own_rows.loc[prefix+'asls_selected_raw'].representation_weighting!='uniform_on_main_support'):
+                raise ValueError('selected-support CSV source/weighting differs')
         if branch['objective']==COSINE and not np.isclose(u['geometry_error'],normal['methods']['main']['vs_selected_input_cosine']['cosine_gram_relative_error'],atol=2e-6,rtol=1e-5):
             raise ValueError('cosine selection geometry disagrees with actual detector representation')
+        if branch['objective']==COSINE and 'uvarfs_feasibility_scope' in own_rows:
+            expected=cosine_feasibility_diagnostics(u,cfg['uvarfs'])
+            for key,value in expected.items():
+                column='uvarfs_'+key
+                if column not in own_rows:
+                    raise ValueError('cosine CSV feasibility scope is incomplete')
+                observed_value=own_rows.loc[own,column]
+                matches=(pd.isna(observed_value) if value is None else
+                         not pd.isna(observed_value) and (np.isclose(observed_value,value,atol=1e-12,rtol=1e-10)
+                         if isinstance(value,float) else observed_value==value))
+                if not matches:
+                    raise ValueError('cosine CSV feasibility scope differs from generated pool/path')
         records.append({'method':own,'layer_normalization':mode,'layers':a['selected_layers'],
                         'objective_definition':branch['objective'],
                         'sparse_path_audit':audit_sparse_path(u,cfg['uvarfs']),
@@ -519,7 +550,8 @@ def audit_fit_only(results,output):
                 'projected_residual':obj['projected_residual'],
                 'effective_weight_dimension':obj.get('effective_weight_dimension'),
                 'candidate_count':len(pool),'stationary_candidates':sum(c['fixed_support_converged'] for c in pool),
-                'line_search_stalled_candidates':sum(c['solver_status']=='line_search_stalled' for c in pool)})
+                'line_search_stalled_candidates':sum(c['solver_status']=='line_search_stalled' for c in pool),
+                **(cosine_feasibility_diagnostics(obj,cfg['uvarfs']) if obj.get('objective_definition')==COSINE else {})})
         datasets.append({'dataset':dataset,'solver_files_checked':len(solver_files),
             'git_blob_code_verified':verify_recorded_code(metadata),'git_head':metadata['git_head'],
             'memory_manifest_available':memory_available,'evaluation_progress':json.loads((folder/'eval_progress.json').read_text(encoding='utf-8')) if (folder/'eval_progress.json').exists() else None,
@@ -621,7 +653,7 @@ def audit(results: Path, output: Path, draws: int):
                      'randomk_raw':[f'randomk_raw_seed{s}' for s in seeds],
                      'randomk_uvarfs':[f'randomk_uvarfs_seed{s}' for s in seeds],
                      'asls_random':[f'asls_random_seed{s}' for s in seeds]}
-        for method in ['all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
+        for method in ['asls_selected_raw','all_raw','all_uvarfs','fixed4_uvarfs','asls_pooled_uvarfs','asls_pca','asls_geometry_search_uvarfs','asls_gate_prefix_uvarfs',
                        'asls_top_weights_uvarfs','asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs','legacy_main',
                        'layer_l2_main','raw_input_main','gram_main']:
             if method in source.method.values:
@@ -639,7 +671,7 @@ def audit(results: Path, output: Path, draws: int):
         for branch in branches[1:]:
             prefix=branch['prefix']; target=prefix+'main'
             groups={prefix+family:[prefix+family] for family in [
-                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','legacy_main',
+                'fixed4_raw','all_raw','all_uvarfs','asls_raw','asls_pca','asls_selected_raw','legacy_main',
                 'asls_prune_refit_uvarfs','asls_exchange_refit_uvarfs'] if prefix+family in source.method.values}
             groups.update({prefix+family:[f'{prefix}{family}_seed{s}' for s in seeds]
                            for family in ['randomk_raw','randomk_uvarfs','asls_random']})
@@ -764,7 +796,7 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda value:f'{value*100:.2f}' if pd.notna(value) else 'n.a.')
     comparisons=pd.DataFrame({'dataset':DATASETS})
-    for family in ['main','gram_main','asls_raw','asls_pca','asls_random','fixed4_raw','all_raw','all_uvarfs',
+    for family in ['main','gram_main','asls_raw','asls_pca','asls_selected_raw','gram_asls_selected_raw','layer_l2_asls_selected_raw','layer_l2_gram_asls_selected_raw','asls_random','fixed4_raw','all_raw','all_uvarfs',
                    'gram_asls_pca','gram_asls_random','layer_l2_main','layer_l2_gram_main','layer_l2_asls_raw']:
         if family not in macro:
             continue
@@ -773,7 +805,7 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
     pairs=paired.copy()
     for column in ['delta_auroc','ci95_lower','ci95_upper']:
         pairs[column]*=100
-    normal_rows=[]; gram_bounds=[]
+    normal_rows=[]; gram_bounds=[]; feasibility_rows=[]; control_rows=[]
     for diagnostic in data['diagnostics']:
         for record in diagnostic['representation_audit']:
             own=df[(df.dataset==diagnostic['dataset'])&(df.method==record['method'])].iloc[0]
@@ -786,6 +818,19 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
                 'fixed_support_first_order_residual':own.get('uvarfs_fixed_support_first_order_residual'),
                 'effective_weight_dimension':own.get('uvarfs_effective_weight_dimension'),
                 'continuous_box_gap':own.get('uvarfs_box_optimality_gap')})
+            sparse=record['sparse_path_audit']
+            if record['objective_definition']==COSINE:
+                feasibility_rows.append({'dataset':diagnostic['dataset'],'method':record['method'],
+                    **{k:sparse[k] for k in ['generated_feasible_candidates','lambda_path_feasible_points',
+                       'generated_min_geometry_error','generated_sparsest_feasible_dimension',
+                       'feasibility_diagnosis','global_budget_infeasibility_claimed']}})
+            control=record['normal_cosine_geometry']['methods'].get('asls_selected_raw')
+            if control is not None:
+                control_rows.append({'dataset':diagnostic['dataset'],'source_main':record['method'],
+                    'feature_dim':control['feature_dim'],
+                    'cosine_error_vs_selected_input':control['vs_selected_input_cosine']['cosine_gram_relative_error'],
+                    'cosine_error_vs_weighted_main':control['vs_weighted_main_cosine']['cosine_gram_relative_error'],
+                    'normal_1nn_agreement_vs_weighted_main':control['vs_weighted_main_cosine']['normal_patch_1nn_agreement']})
             bound=record.get('budget_geometry_audit')
             if bound is not None:
                 gram_bounds.append({'dataset':diagnostic['dataset'],'method':record['method'],
@@ -816,6 +861,14 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
         f'Git blobs 与保存 code fingerprint 核验：{data["git_blob_code_verified"]}。全局/逐数据集 CSV、逐图 AUROC/AP、随机 mean/sample SD、全部正常清单、ASLS 共享和方法维数核验通过。原始文件 SHA256 在 analysis_data.json，读取前后保持。', '',
         '原始输入 Main 固定，完整 L2 消融保留；本轮目标升级授权不等于 L2 Main 切换。旧结果不能 resume 或混入当前版本。性能变化需由全部六数据集和 Brain/Liver/RESC localization 一起评估，不能把数学或 fixture 通过当作正向 AD 效果。', '',
         '实验产物与本报告仅保留本地；代码与开发交接按默认授权同步仓库。', '']
+    if feasibility_rows:
+        frame=pd.DataFrame(feasibility_rows); frame.to_csv(output/'cosine_feasibility_scope.csv',index=False)
+        lines+=['## 有限候选池与 lambda 路径可行性','',markdown_table(frame.round(7),frame.columns.tolist()),'',
+                'feasible 只评价规定 lambda 路径上的完整目标最小点。候选池中可能有满足几何容差的支持，却没有被路径选中。无可行路径点或无可行生成候选都不证明全部预算内支持不可行；不越过原 lambda 选择规则直接替换 Main。','']
+    if control_rows:
+        frame=pd.DataFrame(control_rows); frame.to_csv(output/'selected_support_geometry.csv',index=False)
+        lines+=['## 相同支持去权重对照','',markdown_table(frame.round(7),frame.columns.tolist()),'',
+                'asls_selected_raw 复用各分支 Main 的有序层与 active 索引，均匀相对权重，不重新拟合或选维。对照的异常检测评价用于区分已选支持与相对权重的作用，不用于选择 Main、lambda、支持或主输入；实际零行与正常几何记录在诊断 JSON。','']
     if gram_bounds:
         frame=pd.DataFrame(gram_bounds); frame.to_csv(output/'original_gram_budget_geometry.csv',index=False)
         lines+=['## 原目标预算下界（只作对照）','',markdown_table(frame.round(7),frame.columns.tolist()),'',

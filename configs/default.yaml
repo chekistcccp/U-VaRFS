@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v15-objective-deletion-pruning
+results_dir: results/gpu-eval-v16-weighting-control
 
 representation:
   # Primary protocol stays raw pending explicit approval of an input change.
@@ -82,6 +82,8 @@ methods:
   - fixed4_raw
   - all_raw
   - asls_raw
+  # Same Main support with uniform relative weights; diagnostic ablation only.
+  - asls_selected_raw
   - asls_pca
   - asls_random
   - fixed4_uvarfs
