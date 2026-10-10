@@ -9,13 +9,31 @@ import numpy as np
 import pandas as pd
 
 from uvarfs.protocol import BMAD_DATASETS, EXPERIMENT_VERSION, config_fingerprint, expected_method_names
-from uvarfs.objectives import LOCAL, experiment_branches
+from uvarfs.objectives import LOCAL, QUADRATIC, COSINE, PERFORMANCE, experiment_branches
 from scripts.analyze_results import (source_hashes, validate_output, WeightedRanking,
     paired_bootstrap, verify_recorded_code, audit_sparse_path)
 
 
 def read(path):
     return json.loads(path.read_text(encoding='utf-8'))
+
+
+def audit_solver_result(path, cfg):
+    result=read(path)
+    objective=result.get('objective_definition')
+    legacy_quadratic={'uvarfs_asls_top_weights.json','uvarfs_asls_prune_refit.json',
+                      'uvarfs_asls_exchange_refit.json','uvarfs_legacy_main.json'}
+    # These nested original-solver controls predate explicit objective identities.
+    # Do not interpret a missing Main/local identity as a legacy control.
+    if path.name in legacy_quadratic:
+        if objective not in {None,QUADRATIC}:
+            raise ValueError('legacy quadratic control has a different objective')
+        objective=QUADRATIC
+    if objective==LOCAL:
+        return audit_local_solution(result,cfg)
+    if objective in {QUADRATIC,COSINE,PERFORMANCE}:
+        return audit_sparse_path(result,cfg)
+    raise ValueError('missing or unknown solver objective identity')
 
 
 def audit_local_solution(result, cfg):
@@ -136,11 +154,7 @@ def audit(results, output, completed_only=False, draws=2000):
             if selected['layers']!=asls['selected_layers'] or not np.isclose(selected['selection_score'],asls['selection_score']):
                 raise ValueError('ASLS holdout selection mismatch')
             for path in base.glob('uvarfs_*.json'):
-                obj=read(path)
-                if obj['objective_definition']==LOCAL:
-                    audit_local_solution(obj,cfg['uvarfs'])
-                else:
-                    audit_sparse_path(obj,cfg['uvarfs'])
+                audit_solver_result(path,cfg['uvarfs'])
             main=read(base/'uvarfs_main.json');main_name=prefix+'main';k=len(main['active'])
             if indexed.loc[main_name,'feature_dim']!=k or main['layers']!=asls['selected_layers']:
                 raise ValueError('Main input/support dimensions disagree')

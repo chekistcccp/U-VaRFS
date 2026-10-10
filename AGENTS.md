@@ -1514,3 +1514,5 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 本地数学/mock检查不能证明真实检测改善。锁定新配置后运行全六，并检查相同输入Raw/PCA/Random、β=0与定位差异。历史test多轮用于开发，因此新一轮不声称完全未接触的最终测试。真实BMAD/权重/CUDA不在本机。
 
 本轮完整本地回归222项通过、10项CUDA检查因缺runtime跳过；独立autograd/有限差分、跨图近邻排除、留出不影响拟合候选、β=0去除全部特征阶段nuisance、172方法共享fit/memory/image/pixel、控制/版本/断点/审计与独立seed汇总检查通过。旧backbone/detector/metrics及相关数学模块逐文件保持，v17 reference函数AST保持；Python与shell语法及diff检查通过。这些是实现证据，不是BMAD正向性能证据。
+
+2026-10-11 分析器兼容修复：四类旧 quadratic 子控制（top-weight、prune/refit、exchange/refit、legacy）可缺少显式 `objective_definition`，按其既有文件身份继续核验原 lambda path；其他文件仍要求有效目标身份，缺失 Main/local 身份或将旧控制标为其他目标均拒绝。仅修改只读分析器与回归覆盖，不改训练源码、配置、结果或实验版本；固定重复仍使用已锁定的实验源码。第19节检查的研究定义、ASLS/U-VaRFS、标签约束、detector、预算与结果可比性均不改变。回传数据与分析继续按第28节保存在仓库之外。

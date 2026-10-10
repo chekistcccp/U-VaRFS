@@ -171,6 +171,8 @@ def test_runner_resume_local_artifacts_and_readonly_audit(tmp_path,monkeypatch):
     import scripts.analyze_local_results as analyzer
     from scripts.analyze_results import source_hashes
     cfg,train,test=local_fixture(tmp_path)
+    cfg['methods'] += ['asls_top_weights_uvarfs','asls_prune_refit_uvarfs',
+                       'asls_exchange_refit_uvarfs','legacy_main']
     cfg['paths']['processed_data']=str(tmp_path);cfg['results_dir']=str(tmp_path/'output')
     extractor=CountingExtractor()
     monkeypatch.setattr(torch.cuda,'is_available',lambda:False)
@@ -190,6 +192,26 @@ def test_runner_resume_local_artifacts_and_readonly_audit(tmp_path,monkeypatch):
     result=analyzer.audit(tmp_path/'output',tmp_path/'report',True,100)
     assert result['completed_datasets']==['liver'] and not result['all_six_complete']
     assert hashes==source_hashes(tmp_path/'output')
+    for branch in experiment_branches(cfg):
+        base=folder/branch['folder']
+        for name in ['asls_top_weights','asls_prune_refit','asls_exchange_refit','legacy_main']:
+            control_path=base/f'uvarfs_{name}.json'
+            control=json.loads(control_path.read_text())
+            assert control.get('objective_definition') in {None,QUADRATIC}
+            old_schema=copy.deepcopy(control);old_schema.pop('objective_definition',None)
+            control_path.write_text(json.dumps(old_schema))
+            analyzer.audit_solver_result(control_path,cfg['uvarfs'])
+            wrong_objective=copy.deepcopy(control);wrong_objective['objective_definition']=LOCAL
+            control_path.write_text(json.dumps(wrong_objective))
+            with pytest.raises(ValueError,match='quadratic control'):
+                analyzer.audit_solver_result(control_path,cfg['uvarfs'])
+            control_path.write_text(json.dumps(control))
+        path=base/'uvarfs_main.json';main_data=json.loads(path.read_text())
+        missing_identity=copy.deepcopy(main_data);missing_identity.pop('objective_definition')
+        path.write_text(json.dumps(missing_identity))
+        with pytest.raises(ValueError,match='objective identity'):
+            analyzer.audit_solver_result(path,cfg['uvarfs'])
+        path.write_text(json.dumps(main_data))
     # Both causal artifacts and the previous ASLS are required for resume.
     (folder/'uvarfs_asls_no_variability.json').unlink()
     runner.main();assert len(extractor.outputs)>before
