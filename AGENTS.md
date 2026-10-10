@@ -7,7 +7,7 @@
 > **核心原则：不要因为局部实现问题、性能问题、某个数据集报错或某次问答而改变研究问题。**
 > 工程实现可以调整，baseline 可以补充，求解器可以加速，但论文主线、数据协议和无标签约束不得在没有用户明确指令的情况下漂移。
 
-> **当前工程状态见第 43 节（v18 固定预算交换后重拟合）**。用户于 2026-10-09 明确将更强检测性能置于更强压缩之前；当前 Main 见第 5.5/43 节的固定预算、capped cosine/simplex U-VaRFS。第 5.4/37 节旧 cosine 压缩策略作为 `asls_compression_uvarfs` 保留，第 5.2 节原公式继续完整 `gram_*` 控制。raw Main 固定、L2 消融保留；不按 test 选择主输入。
+> **当前研究设计与工程状态见第 45 节及 [NORMAL_LOCAL_SELECTION.md](NORMAL_LOCAL_SELECTION.md)**。用户于 2026-10-10 授权依据复核建议修改方法和主线：核心是开发改善检测/定位表现的稀疏特征选择，而不是以压缩、低正常 loss 或工程提速替代性能收益。v20 主输入预设为逐层 L2，ASLS 使用正常留出局部匹配，U-VaRFS 使用局部余弦/排序/实际 nuisance 稳定性及原256维预算；raw 与全部旧目标作为控制。第 4.1、5.2–5.5、27–44 节旧实现说明按明确标记保留历史，不再定义当前 Main。不按 test 自动选择输入或参数。
 
 ---
 
@@ -41,7 +41,7 @@ Cosine 1-NN anomaly matching
 Image AUROC/AUPRC + Pixel AUROC/AUPRC/AUPRO
 ```
 
-**论文核心不是“更复杂的异常检测器”，而是验证：DINOv3 的层和 latent dimensions 存在可利用的冗余，可仅利用 normal-reference 数据的结构与扰动稳定性完成自适应稀疏选择。**
+**论文核心是开发一种仅使用 normal-reference 数据、能够改善检测和定位表现的稀疏特征选择方法。冗余是待检验前提；稀疏、正常几何保持和稳定性是代理与约束，不能直接作为检测成功的证明。**
 
 ---
 
@@ -226,7 +226,9 @@ representation geometry preservation
 + layer sparsity
 ```
 
-## 4.1 当前代码实现必须准确描述
+## 4.1 v4–v19 历史实现（控制保留，非当前 Main）
+
+v20 当前 ASLS 在全部层候选的原 2–6 层预算内，以正常留出局部余弦和近邻排序，加拟合 nuisance 稳定性评价全部组合；不优先选最小层数。逐层 L2 主输入贯穿后续 memory/query。完整定义与边界见第45节及 NORMAL_LOCAL_SELECTION.md。它不是 sigmoid gate 或 Hard-Concrete；下面 sigmoid/Adam 与 global geometry-search 是保留的历史控制。
 
 当前 `uvarfs/asls.py` 使用：
 
@@ -293,7 +295,7 @@ normal representation preservation
 
 ## 5.2 数学主线
 
-**历史原 quadratic 公式**：用户已于第 37 节明确批准 cosine/simplex 目标升级。本节公式在 `gram_*` 完整消融中保持，不再定义当前 Main；当前性能优先目标见第 5.5/42 节；第 5.4 节保留此前已批准的目标控制。该批准是明确方法变更，不能包装为等价提速。
+**历史原 quadratic 公式**：用户已于第37节批准cosine/simplex，并于第45节批准normal-local升级。本节公式在`gram_*`完整消融中保持，不定义当前Main；当前目标见第45节。第5.4–5.5节均保留已批准的历史目标控制；目标变化不能包装为等价提速。
 
 ASLS 选择层后，将对应 latent features 拼接：
 
@@ -389,7 +391,7 @@ lambda|w|_1
 
 ## 5.3 原目标控制 solver
 
-以下 batched FISTA / 原目标支持集求解仅属于 quadratic 控制；当前 Main 的分块 cosine 梯度、capped refit 与固定预算候选见第 5.5/42 节。
+以下batched FISTA/原目标支持集求解仅属于quadratic控制；v17–v19分块全局cosine梯度/capped refit也属于历史控制。当前Main局部边梯度、正常留出候选和固定预算见第45节。
 
 当前 `uvarfs/u_varfs.py` 已改为：
 
@@ -449,7 +451,9 @@ P 保持正常 nuisance variability 与原列归一化；P 全零时该项为零
 
 ---
 
-## 5.5 用户于 2026-10-09 要求性能优先后的当前 Main
+## 5.5 v17–v19 性能优先 fixed-budget 目标（历史控制）
+
+本节 cosine/global objective 已在 v20 作为旧目标控制保留，不再定义当前 Main；新 Main 见第45节。原二次目标、旧压缩 cosine 和完整上一主方法均保留。
 
 Main `objective: cosine_simplex_fixed_budget`。保持正常 cosine 表示损失、原 variability/P 标定与 beta=0.002，令 K=min(256,M)，每个支持固定 K，p>=floor_mass/K、sum(p)=1，并增加 p<=min(1,4/K)。不扫 Main lambda、不优先挑最小维数；稀疏由原上限256的硬预算实现。
 
@@ -691,7 +695,7 @@ U-VaRFS
 
 在相同 detector、相同 layer input、相同 memory protocol 下进行。
 
-## Q4. 稀疏表示是否能维持/改善性能并显著降低开销？
+## Q4. 稀疏选择是否改善检测和定位，且其实际开销是否合理？
 
 理想叙事：
 
@@ -709,7 +713,7 @@ AUROC/AUPRO non-inferior or improved
 + lower matching cost
 ```
 
-不要把“刷新所有 BMAD SOTA”设为必要成功条件。
+不要把“刷新所有 BMAD SOTA”设为必要成功条件。更少维数、较低正常训练误差或较快求解不能补偿检测性能下降；同输入 Raw/PCA/Random 与 β=0 的检测差异决定假设是否得到支持。
 
 ---
 
@@ -836,12 +840,12 @@ run.sh
 
 ---
 
-# 16. 当前加速版状态
+# 16. 历史加速与当前版本身份
 
 当前 experiment version：
 
 ```text
-gpu-eval-v18-refitted-support-exchange
+gpu-eval-v20-normal-local-selection
 ```
 
 原因：
@@ -959,7 +963,7 @@ results/
 只有包含当前：
 
 ```text
-experiment_version = gpu-eval-v18-refitted-support-exchange
+experiment_version = gpu-eval-v20-normal-local-selection
 ```
 
 的完整 dataset result 才允许 resume。
@@ -1105,19 +1109,19 @@ U-VaRFS vs PCA / Random / Raw。
 
 # 23. 项目成功判据
 
-**2026-10-09 用户更新：检测性能是首要依据。更强压缩不得作为性能下降的补偿或本轮改进目标。下面的原优先级保留主线语境，当前性能优先规则与约束以第42节为准。**
+**用户要求检测性能为首要依据：更强压缩不得补偿性能下降。当前性能优先方法与验证判据以第45节为准。**
 
 本项目成功不等于必须所有 benchmark SOTA。
 
 优先级依次是：
 
-1. **自适应稀疏有效**；
+1. **稀疏选择带来检测/定位性能改善**；
 2. **ASLS 优于随机/固定层**；
-3. **U-VaRFS 优于 Random/PCA 或至少在更低维度下 non-inferior**；
-4. **显著压缩 feature dimension / memory matching cost**；
+3. **U-VaRFS 在同输入、同预算下优于 Raw/Random/PCA，且 variability 的收益由 β=0 对照支持**；
+4. **报告实际维度、匹配开销与完整拟合成本，作为约束和代价**；
 5. **在六 BMAD 数据集上具有跨模态一致性**；
 6. Liver CT 等带 mask 数据有合理 localization；
-7. 如部分数据集性能提升、部分持平，也可以通过“redundancy/compression + robustness”形成论文故事。
+7. 部分提升、部分下降须完整报告；不能用 compression/robustness 叙事代替未成立的检测提升假设。
 
 如果性能失败，应优先诊断：
 
@@ -1161,7 +1165,7 @@ Codex 接手后优先级：
 
 1. 拉取最新 `main`；
 2. 不改研究设计；
-3. 先单独验证 Liver 新版 cosine/simplex U-VaRFS 与完整原目标控制：
+3. 先单独验证 Liver v20 normal-local U-VaRFS、正常留出隔离及完整旧目标控制：
    ```bash
    SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
    ```
@@ -1170,7 +1174,7 @@ Codex 接手后优先级：
    - ASLS 有日志；
    - cosine/refit、候选 feasible/残差/有效维数和原 batched FISTA 控制有日志；
    - PCA GPU fit 有日志；
-   - 四支正常 manifest、164 方法与 memory/test 正常；
+   - 四支正常 manifest、172 方法与 memory/test 正常；
 5. Liver 完成后再全 6 benchmark；
 6. 再考虑双 3090 dataset-level parallel runner；
 7. 结果稳定后补缺失 baseline 与论文图表。
@@ -1454,7 +1458,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 42. 2026-10-09 v17 性能优先（当前工程状态）
+# 42. 2026-10-09 v17 性能优先（历史工程状态）
 
 用户明确要求：“不要使用更强的压缩，就需要更强的性能，依此为依据进行改进”。版本 `gpu-eval-v17-performance-first`，新目录 `results/gpu-eval-v17-performance-first/`。当前 Main 定义见第5.5节与 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，不是仅增加诊断或等价提速。回传成绩/分析/图表/日志依第28节仅留本地。
 
@@ -1469,7 +1473,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 ---
 
-# 43. 2026-10-09 v18 固定预算支持交换后重拟合（当前工程状态）
+# 43. 2026-10-09 v18 固定预算支持交换后重拟合（算法定义；历史开发记录）
 
 版本 `gpu-eval-v18-refitted-support-exchange`；新目录 `results/gpu-eval-v18-refitted-support-exchange/`。Main保持第5.5节的性能优先固定K/capped cosine目标与raw输入；具体算法、检查边界和运行见 [REFITTED_SUPPORT_EXCHANGE.md](REFITTED_SUPPORT_EXCHANGE.md)。回传成绩/分析/图表/日志依第28节仅留本地，不写入开发交接。
 
@@ -1480,3 +1484,33 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 新版本/目录/指纹，resume须四支v17控制文件和原文件；不覆盖/混合旧回传。完整成本包括拒绝refit/polish，不把共享整套成本当单Main成本。
 
 190项完整本地检查通过，8项CUDA检查因缺runtime跳过。正常有限交换反例、固定K/cap/严格几何保护、多步与明确fallback、零行/全支持/禁用、拒绝提案成本、篡改拒绝、两种primary下164方法fit/memory/image/pixel与完整断点通过。原v17求解函数AST保持，两输入支持/权重/scales/选解与上一提交逐项一致；ASLS、CosineObjective/原cosine完整控制、original Gram、variability/backbone/detector/evaluation源码保持。旧v17全部24主分支审计通过，801个回传原文件哈希保持；shell/diff检查通过。本机无真实BMAD/模型/CUDA；真实v18收益仍须服务器先Liver验证运行，再统一配置全六评价。
+
+
+---
+
+# 44. 2026-10-10 v19 精确余弦状态缓存与部分回传审计（历史工程状态）
+
+版本 `gpu-eval-v19-exact-cosine-state-cache`；新目录 `results/gpu-eval-v19-exact-cosine-state-cache/`。Main 的第5.5/43节固定K/capped cosine目标、完整v18交换/refit搜索与raw输入保持。具体工程定义与第19节检查见 [EXACT_COSINE_CACHE.md](EXACT_COSINE_CACHE.md)。本节不写回传指标；实验产物、分析和日志依第28节仅留本地。
+
+- 新增有显式128 MiB持久张量上限的最后一次余弦状态缓存；仅对完全相同的有序支持、权重、dtype和device复用actual cosine blocks与解析梯度。改变任何权重或支持立即失效，超上限回用原实现，0可关闭。原目标/行块顺序、迭代、提案、完整候选池与选择不变，没有近似几何或数据子采样。
+- 所有拒绝refit/polish成本仍记录。evaluate请求与实际geometry构建/复用分开，保存缓存峰值字节；审计检查内存上限与计数一致性，不用命中统计冒充实际GPU加速或检测提升。
+- `--completed-only`严格分析cosine/simplex部分回传：最终metrics和complete进度一致，方法/来源/共享normal预算继续全部核验；未完成目录也检查来源。输出明确完成/未完成/缺失的六数据集状态，单数据集不称为全六宏平均。默认完整分析仍要求全六，fit-only语义保持。
+- ASLS、原CosineObjective/refit/SLSQP、v17完整reference、原压缩cosine、original Gram、五seed和同维/同支持对照、Frozen backbone、normal-only、raw/L2、全部正常数据与memory预算、detector/Top1%/pixel协议保持。默认164方法，全六984行；性能优先，不以更强压缩或低正常目标补偿性能下降。
+- v19使用独立版本/目录/指纹，不续接或混用v18回传。原结果只读，源SHA256记录。真实BMAD/模型/CUDA缺失，本地等值和流程通过不能代替服务器全六检测验证。
+
+---
+
+# 45. 2026-10-10 v20 正常局部稀疏选择（当前研究与工程主线）
+
+用户授权根据研究建议修改代码及主线。精确公式、候选规则、变更检查、实验判据和文献边界以 [NORMAL_LOCAL_SELECTION.md](NORMAL_LOCAL_SELECTION.md) 为准。当前版本 `gpu-eval-v20-normal-local-selection`，独立结果目录，旧回传不覆盖、不混合；代码/配置/测试/开发文档默认检查后提交推送，实验产物依第28节仅留本地。
+
+- **研究核心：开发改善模型检测和定位表现的稀疏特征选择方法。** 固定 BMAD 全六、Frozen DINOv3 全层候选、ASLS 选层、U-VaRFS 选潜在维数、normal-only、简单 cosine 1-NN detector。压缩、低正常 loss 与工程加速不是性能成功替代品。
+- 主输入逐层 L2，原 raw 作为配对消融。授权依据是修正 ASLS 与实际拼接 cosine 的几何定义，不按历史 test 择优。零行候选无效；不改变 backbone 或 detector。
+- 原256正常图像分为192拟合/64候选比较；96扰动图像属于拟合，所有方法共用划分。近邻排除同图patch，留出仅查拟合reference，不参与梯度/支持提案/P统计。不声称患者隔离。既有扰动forward同位置patch缓存，不新增数据预算。最终memory在选择完成后沿原共享官方normal train协议建立。
+- ASLS 对原2–6层全部组合比较留出local/rank与拟合nuisance质量，不优先最少层。当前不是sigmoid/Adam或Hard-Concrete；旧选择规则完整保留。
+- U-VaRFS `normal_local_fixed_budget` 保持K=min(256,M)、capped simplex，改为normal local cosine + normal-neighbor rank + actual nuisance cosine；有限支持启发式/交换只用拟合集，留出选择有限池。不声称未知异常分离保证、全局最优或 global Gram<=.05。局部误差和全局诊断区分。
+- `previous_main` 保留完整旧ASLS+旧fixed-budget方法（同轮新数据划分），原Gram/压缩cosine/v17控制、同支持去权重、同维PCA及五seed随机控制保留。新增U-VaRFS β=0与去rank对照，仅local分支定义。默认172方法/六数据集1032行。
+- `--seed`提供独立Main/fit/memory重复，独立目录；baseline seeds不能当Main重复。分析入口为 `python -m scripts.analyze_local_results`；完整报告要求全六，部分回传显式`--completed-only`，不把部分平均称全六宏平均。
+- 本地数学/mock检查不能证明真实检测改善。锁定新配置后运行全六，并检查相同输入Raw/PCA/Random、β=0与定位差异。历史test多轮用于开发，因此新一轮不声称完全未接触的最终测试。真实BMAD/权重/CUDA不在本机。
+
+本轮完整本地回归222项通过、10项CUDA检查因缺runtime跳过；独立autograd/有限差分、跨图近邻排除、留出不影响拟合候选、β=0去除全部特征阶段nuisance、172方法共享fit/memory/image/pixel、控制/版本/断点/审计与独立seed汇总检查通过。旧backbone/detector/metrics及相关数学模块逐文件保持，v17 reference函数AST保持；Python与shell语法及diff检查通过。这些是实现证据，不是BMAD正向性能证据。

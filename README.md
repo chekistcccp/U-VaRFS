@@ -1,11 +1,9 @@
-> **当前 v18**：固定原256维预算和capped cosine/variability目标，交换支持先重拟合再比较，保留完整v17同轮控制。默认164方法、BMAD全六984行；检测性能为首要依据，数据/memory与detector不变。见 [REFITTED_SUPPORT_EXCHANGE.md](REFITTED_SUPPORT_EXCHANGE.md)。
+> **当前 v20：正常局部稀疏选择**。研究核心是开发改善检测与定位性能的稀疏特征选择方法。Main 预设逐层 L2，以正常局部匹配、近邻排序和实际扰动稳定性选层/选维，保留原256维上限；旧目标、raw、PCA与五seed随机控制完整保留。精确设计、变更授权与证据边界见 [NORMAL_LOCAL_SELECTION.md](NORMAL_LOCAL_SELECTION.md)。
 
-> **Codex 接手请先读：[AGENTS.md](AGENTS.md)**。该文件锁定研究主线、实验协议、当前实现状态与禁止偏移项；后续修 bug、提速和补实验均应以其为最高优先级项目说明。  
-> **v17目标定义（当前v18沿用）**。用户明确要求性能优先；Main 固定使用原256维上限，不再优先减少维数，增加统一相对权重cap以限制集中，并在正常几何可行候选中比较正常表示/稳定性目标。旧 cosine 压缩策略作为 `asls_compression_uvarfs`、原 quadratic 完整 gram_* 控制保留；v17为160方法、六数据集960行；v18增加原v17控制，默认164方法、984行。Frozen backbone、ASLS、raw Main、无异常标签、正常数据/memory与detector保持。精确定义与运行见 [PERFORMANCE_FIRST.md](PERFORMANCE_FIRST.md)，不宣称新策略尚未验证的真实性能提升。
+> **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告仅留本地。
 
-原目标提案及只读数学评审见 [提案历史记录](UV_COSINE_OBJECTIVE_PROPOSAL.md)。Main 仍固定 raw 输入，L2 主输入切换须另行明确批准；v12 目标变更授权仅覆盖上述 U-VaRFS 数学升级，v14/v15 在该目标内改进数值求解。
+旧设计说明作为历史控制保留：[quadratic 与支持求解](OBJECTIVE_SPARSITY_UPGRADE.md)、[cosine/cardinality](COSINE_UVARFS_UPGRADE.md)、[fixed-budget cosine](PERFORMANCE_FIRST.md)、[v18支持交换](REFITTED_SUPPORT_EXCHANGE.md)、[v19工程缓存](EXACT_COSINE_CACHE.md)。当前主输入与目标明确变更，不按历史 test 自动挑选输入或超参。
 
-已归档的历史回传结果见 [v4 六数据集分析](reports/2026-10-06-v4-analysis/analysis.md) 与 [v3 历史分析](reports/2026-10-06-v3-analysis/analysis.md)。按用户最新默认设置，每轮改进检查通过后只提交、推送代码、配置、测试和开发文档；实验结果、日志、图表及结果分析报告仅保留本地，具体约定见 `AGENTS.md` 第 28 节。
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
 > **数据入口已固定为 `data/archives/`**  
 > 你只需把自行下载的 BMAD 原始压缩包全部放入该目录，不需要手工解压、改名或整理内部目录。  
@@ -14,7 +12,7 @@
 # U-VaRFS：DINOv3 自适应稀疏层选择与无监督可变性正则特征选择用于医学图像异常检测
 
 > **当前阶段：方法实现与 BMAD 验证**
-> 目标：在 BMAD 全部 6 个医学异常检测数据集上，验证 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS + Normal Memory Matching** 的轻量、无标签异常检测框架。
+> 目标：在 BMAD 全部 6 个医学异常检测数据集上，开发并检验 **Frozen DINOv3 + Adaptive Sparse Layer Selection + U-VaRFS + Normal Memory Matching** 的性能导向、无异常标签稀疏特征选择方法。
 
 ---
 
@@ -45,7 +43,7 @@ Unsupervised Variability-Regularized Feature Selection (U-VaRFS)
     ↓
 Sparse stable patch representation
     ↓
-Normal memory bank + cosine kNN
+Normal memory bank + cosine 1-NN
     ↓
 Image-level anomaly score + pixel-level anomaly map
 ```
@@ -66,7 +64,7 @@ Image-level anomaly score + pixel-level anomaly map
 - 训练阶段使用 BMAD 官方训练集作为正常参考库；
 - **ASLS 与 U-VaRFS 不使用 good/Ungood、疾病类别或分割标签作为优化目标**；
 - 异常标签与像素级 mask 仅用于最终评价；
-- test set 在所有方法和超参数固定后才进行最终测试。
+- 新设计与超参固定后统一测试；历史test多轮用于开发，须披露自适应复用。
 
 因此，本项目中的“无监督/无标签”特指：
 
@@ -76,13 +74,13 @@ Image-level anomaly score + pixel-level anomaly map
 
 ### 2.2 核心假设
 
-H1. DINOv3 多层表征存在明显冗余，不同医学模态所需要的层深度不同。
+H1. DINOv3 多层表征可能存在可利用冗余；这是需要验证的前提。
 
-H2. 对轻微成像扰动稳定、同时能够保持正常数据几何结构的 DINOv3 层更适合医学异常检测。
+H2. 保持正常局部匹配和近邻排序可能更适合cosine 1-NN检测，但不保证未知异常分离。
 
-H3. 在选中的层内，仅有一小部分 latent dimensions 对稳定正常表征有贡献。
+H3. 正常nuisance稳定性与稀疏支持联合优化可能改善AD；必须由β=0、PCA和Random对照验证。
 
-H4. 与 PCA 或固定层组合相比，**ASLS + U-VaRFS** 能以更少的层、特征维度和 memory-bank 开销达到相当或更高的异常检测性能。
+H4. 固定原预算的**ASLS + U-VaRFS**能否改善六数据集检测/定位，是当前核心问题；压缩和速度不是收益替代品。
 
 ---
 
@@ -180,302 +178,33 @@ F^{(l)} \in \mathbb{R}^{P\times384}
 
 ## 6. 模块一：Adaptive Sparse Layer Selection（ASLS）
 
-### 6.1 目标
+所有 DINO 层作为候选，在原2–6层预算内比较全部组合。目标为正常留出局部余弦误差 + 正常近邻排序误差 + 拟合图像 nuisance cosine distance（权重 .15）；选择分数最小组合，不优先减少层数。
 
-从全部 12 个 DINOv3 block 中自动选择少量层，而非人工指定。
+每层 patch 先 L2，再拼接。此时实际拼接余弦等于所选层余弦均值，ASLS、U-VaRFS、memory 和 query 几何一致。raw 完整配对消融使用实际 raw 拼接余弦，不混用参考定义。
 
-希望同时满足：
+原256正常图像随机排列，192用于拟合、64用于候选比较；96扰动图像属于拟合，所有方法共享。拟合近邻排除同图全部patch，留出只匹配拟合reference，不参与权重梯度、支持提案或P统计。只声称图像隔离，不声称患者隔离。最终memory在选择结束后仍按共享官方normal train抽样。
 
-1. 选中层能够保持完整 DINOv3 hierarchy 的正常表征结构；
-2. 对无意义成像扰动具有较高稳定性；
-3. 层数尽可能少。
-
-### 6.2 每层的正常表征几何
-
-对训练集正常图像/采样 patch，得到第 (l) 层特征 (F_l)。
-
-归一化后构造：
-
-[
-K_l = F_lF_l^T
-]
-
-建立全层 consensus geometry：
-
-[
-K_C = \frac{1}{L}\sum_{l=1}^{L} K_l
-]
-
-当前主方法对采样 normal-reference patches 构造每层 cosine Gram，并使用全层平均 consensus。默认复用 256 张正常 fit 图像、每图 16 patches，即 4096 个对应 patch rows。
-
-v6 按用户批准将 patch geometry 作为 Main 输入，保留 `asls_pooled_raw`/`asls_pooled_uvarfs` 消融。通过 layer-Gram 内积等价计算控制内存；原 sigmoid/Adam/loss/离散规则和数据预算保持。不以测试性能择优选择版本。
-
-v8 按用户要求升级为正常几何组合搜索与原目标剪枝/refit，v9 再加入原目标支持集交换/refit。v10 增加完整输入归一化消融；旧前缀、旧特征截断和完整旧流程继续保留同轮对照。算法边界见 [稀疏升级说明](OBJECTIVE_SPARSITY_UPGRADE.md)、[交换说明](SUPPORT_EXCHANGE_AUDIT.md) 和 [输入消融说明](LAYER_ALIGNMENT_ABLATION.md)。
-
-### 6.3 Layer variability
-
-对于正常图像 (x) 和轻微扰动 (T_v(x))：
-
-[
-u_v^j = \frac{\mathbb{E}_i[(f_j(x_i)-f_j(T_v(x_i)))^2]}{\operatorname{Var}_i(f_j(x_i))+\epsilon},
-\qquad V_l = \operatorname{Mean}_{v,j\in l}(u_v^j)
-]
-
-当前实现使用全体采样正常 patch 的总体方差与扰动平方差均值，包含 batch 之间的方差；不对 batch 内的比值取平均。
-
-低 (V_l) 表示该层对 nuisance perturbation 更稳定。
-
-### 6.4 稀疏层选择
-
-每层设置 continuous gate probability：
-
-[
-p_l = \operatorname{sigmoid}(a_l)
-]
-
-当前代码使用 sigmoid continuous layer gates 与 Adam。它不是 Hard-Concrete 或严格的 L0 relaxation。Main 在预设层数预算内搜索满足 geometry tolerance 的最小层组合；原按概率排序的前缀规则作为同轮消融保留，检测阶段仅使用各方法选中的层。
-
-目标函数：
-
-[
-\mathcal{L}_{layer} =
-\frac{\|L^{-1}\sum_l p_l K_l-K_C\|_F}{\|K_C\|_F}
-+\gamma\frac{\sum_l p_l\widetilde V_l}{\sum_l p_l}
-+\rho L^{-1}\sum_l p_l
-]
-
-其中 \(\widetilde V_l\) 是 normal-only variability 的 min-max 归一化值：
-
-- 第一项：保持 DINOv3 hierarchy 的几何结构；
-- 第二项：抑制扰动敏感层；
-- 第三项：continuous gate sparsity。
-
-### 6.5 无标签选择策略
-
-为了避免通过 validation anomaly labels 调节 layer sparsity，采用无标签停止标准：
-
-> 选择能够达到预设 geometry-preservation 水平的最小层集合。
-
-默认：
-
-[
-\frac{\|K_C-K_g\|_F}{\|K_C\|_F} \le 0.05
-]
-
-该条件表示相对 Frobenius 几何误差不超过 0.05，不等同于解释方差或“保留 95% 信息”。Main 在 2–6 层组合内按几何容差和预设正常数据规则选择；无可行组合时明确记录 `feasible=false`，不能将 fallback 写为达标。前缀消融仍沿用其原 fallback 规则。
-
-默认允许 2–6 层，实际层数由正常数据决定。记录 gate 范围、梯度和选层几何误差，以诊断饱和与几何退化。
-
----
+当前 Main 是离散局部候选选择，不是 sigmoid/Adam 或 Hard-Concrete。旧 sigmoid/Adam、geometry-search、gate-prefix 和 pooled 控制保留；`asls_previous.json`记录旧ASLS。完整定义见 [v20设计](NORMAL_LOCAL_SELECTION.md)。
 
 ## 7. 模块二：U-VaRFS
 
-### 7.1 原始 VaRFS 的修改原则
+正常全局 Gram 保持不能保证未知异常分离。新方法尝试让稀疏特征保持检测器依赖的局部近邻关系，并抑制实际 nuisance 敏感性；这是待检验的代理假设，不称为异常标签判别学习。
 
-原 VaRFS 的核心思想为：
-
-[
-\text{Discriminability}
-+
-\text{Variability Regularization}
-+
-\text{Sparsity}
-]
-
-其中监督 discriminability 项依赖标签 (y)。
-
-U-VaRFS 只替换这一监督项：
-
-[
-\boxed{
-\text{Representation Preservation}
-+
-\text{Variability Regularization}
-+
-\text{Sparsity}
-}
-]
-
-从而实现无异常标签特征选择。
-
-### 7.2 输入
-
-ASLS 选出 (L^*) 个层后，将对应 latent channels 拼接：
-
-[
-X \in \mathbb{R}^{N\times M}
-]
-
-例如选择 4 层时：
-
-[
-M = 4\times384=1536
-]
-
-### 7.3 表征几何保持
-
-当前性能优先 Main 使用 detector 实际 cosine 几何。令 `p>=0, sum(p)=1`，`Y=X diag(sqrt(p))`，`C(p)=cosine_gram(Y)`，`C_full=cosine_gram(X)`：
+用全部候选输入建立 dense teacher，每个query的跨图最近正常reference和第8个正常邻居构成两类局部边。难匹配正常query权重有界至4，避免全局平均过度偏重容易正常patch。
 
 ```text
-min 0.5 * ||C_full-C(p)||_F² / ||C_full||_F²
-    + beta * ||P^T p||² / ||P^T (1/M)||²
-subject to |support(p)| = K = min(256,M),
-           floor_mass/K <= p_j <= min(1,4/K) on support,
-           actual cosine relative error <= 0.05
+min_support,p L_local_cosine + L_normal_neighbor_rank + beta L_actual_nuisance_cosine
+K = min(256, candidate dimension), sum(p)=1
+1e-4/K <= p_j <= min(1,4/K) on support; others zero
+beta=.002, rank weight=1
+Y = X diag(sqrt(p))
 ```
 
-不扫 Main lambda 或优先减少维数。固定原最大预算256、floor mass=1e-4，零行候选无效；P 全零时 variability 项为零。有限生成池先筛正常几何可行候选，再比较正常目标；无可行候选时明确 fallback。权重 cap 限制系数集中，固定支持残差使用 capped simplex，不证明全局稀疏最优或检测收益。精确定义见 [性能优先协议](PERFORMANCE_FIRST.md)。
+三个正常数据支持起点保留 uniform 和 projected-gradient refit；有限交换只用拟合集。候选由正常留出 local/rank 加拟合 variability 分数选出，不扫 Main lambda，不挑更小维数。解析梯度只计算局部边；仅报告固定支持 capped simplex 一阶残差，不声称全局最优或异常性能保证。
 
-原 `cosine_simplex_cardinality` 的32–256维 lambda/剪枝策略保留为 `asls_compression_uvarfs`；历史目标/固定支持精修/删维见 [v12 实现](COSINE_UVARFS_UPGRADE.md)、[v14 记录](FIXED_SUPPORT_POLISH.md)、[v15 删维](OBJECTIVE_DELETION_PRUNING.md)。
+新局部误差与全局 Gram 分开记录，旧0.05 global tolerance只作用于旧控制。原 quadratic/P、旧cosine/cardinality、完整旧fixed-budget目标都保留；它们与新目标不属于等价数值优化。`previous_main`保留旧ASLS+旧fixed-budget solver，但同轮共享v20数据划分，不能当历史版本数值复现。
 
-下文保留原 quadratic 数学定义，当前仅用于完整 `gram_*` 控制。
-
-完整特征：
-
-[
-K=XX^T
-]
-
-为每个 feature/channel (j) 设置非负权重 (w_j)。
-
-加权特征几何：
-
-[
-K_w =
-X\operatorname{diag}(w)X^T
-]
-
-无监督表征保持项：
-
-[
-\mathcal{L}_{rep}
-=
-\frac12
-\left\|
-K -
-X\operatorname{diag}(w)X^T
-\right\|_F^2
-]
-
-含义：
-
-> 用尽可能少的稳定 latent dimensions 保留完整 DINOv3 正常特征空间的几何结构。
-
-### 7.4 Variability regularization
-
-对每种扰动 (v)，第 (j) 个特征定义：
-
-[
-u_v^j =
-\frac{
-\mathbb{E}_i
-\left[
-(f_j(x_i)-f_j(T_v(x_i)))^2
-\right]
-}{
-\operatorname{Var}_i(f_j(x_i))+\epsilon
-}
-]
-
-分母用于防止选择“几乎恒定但没有信息”的 latent channel。
-
-将多种 variability source 组成：
-
-[
-P=[u_1,u_2,\ldots,u_V]
-]
-
-并继承 VaRFS 的形式：
-
-[
-R=PP^T
-]
-
-[
-\mathcal{L}_{var}=w^TRw
-]
-
-### 7.5 原 U-VaRFS 目标（`gram_*` 消融）
-
-[
-\boxed{
-\min_{w\ge0}
-\frac12
-\left\|
-K-X\operatorname{diag}(w)X^T
-\right\|_F^2
-+
-\beta w^TRw
-+
-\lambda\|w\|_1
-}
-]
-
-可选约束：
-
-[
-0\le w_j\le1
-]
-
-用于防止某些 channel 被过度放大。
-
-### 7.6 原目标计算优化与新版求解
-
-原 quadratic 控制使用 feature-space H 避免构建大量 patch 的 sample Gram。新主目标缓存既有 normal fit 的 reference Gram（默认 4096 行约 64 MiB），按块精确计算实际 cosine 损失与梯度；固定支持上用 simplex 投影与下降线搜索，预算内生成删除/交换候选。没有使用异常标签或缩减 geometry rows。
-
-令：
-
-[
-H=
-(X^TX)\odot(X^TX)
-]
-
-则：
-
-[
-\left\|
-XX^T-X\operatorname{diag}(w)X^T
-\right\|_F^2
-=
-(\mathbf{1}-w)^T
-H
-(\mathbf{1}-w)
-]
-
-因此可以直接在 feature 维度上优化：
-
-[
-\boxed{
-\min_w
-\frac12(\mathbf{1}-w)^TH(\mathbf{1}-w)
-+
-\beta w^TRw
-+
-\lambda\|w\|_1
-}
-]
-
-当 (M\approx384\sim2000) 时，该问题规模很小。
-
-原目标控制优化器：
-
-- FISTA / Accelerated Proximal Gradient；
-- proximal soft-threshold；
-- 可选 ([0,1]) clipping。
-
-### 7.7 无标签 sparsity 选择
-
-主实验不使用 anomaly labels 调 (lambda)。
-
-沿 (lambda) path 求解，并选择：
-
-> 在预设几何误差容差内取最稀疏可行点，无可行点则取 error 最小 fallback 并报告 `feasible=false`。Main 度量为 actual cosine；gram 控制度量仍是 unrenormalized weighted Gram，不把两种 feasible 或证书混用。新 lambda 仅在预先生成的有限支持池上比较完整目标，不声称全局非凸最优。
-
-支持候选包含以下预算（当前仅评价所选表示，拟合候选不是逐 K 检测成绩）：
-
-- 64 dims；
-- 128 dims；
-- 256 dims。
+`asls_no_variability_uvarfs`去除特征阶段所有nuisance使用，`asls_no_rank_uvarfs`去掉排序项；同支持uniform、Raw、同维PCA、五seedRandom保留。通过这些AD对照判断支持、权重与variability是否有效，不能只比较正常训练目标。公式、选择尺度、零行规则、预算与变更检查见 [NORMAL_LOCAL_SELECTION.md](NORMAL_LOCAL_SELECTION.md)。
 
 ---
 
@@ -783,47 +512,11 @@ PCA / SparsePCA / Random / Variance / U-VaRFS 对比。
 
 ## 14. 成功判据
 
-本项目不要求所有数据集均刷新 SOTA；核心目标是证明：
+首要目标是稀疏选择改善检测和定位表现。在相同层输入和统一memory预算下，比较Main与Raw、PCA、Random；以β=0和去rank对照检验代理模块贡献，以相同支持uniform区分选维与加权贡献。
 
-### 目标 1：高稀疏率
+全部六数据集Image AUROC/AUPRC与三个mask数据集Pixel AUROC/AUPRC/AUPRO都必须报告，包含下降项、成对差异及不确定性。随机基线报告全部五seed mean±SD；Main需独立fit/memory seeds，不能将随机baseline seeds算成Main重复。
 
-理想结果：
-
-[
-12\rightarrow3\sim5\;layers
-]
-
-且：
-
-[
-4608\rightarrow64\sim256\;effective\ dimensions
-]
-
-### 目标 2：性能不下降或提升
-
-期望：
-
-[
-AUROC_{sparse}
-\ge
-AUROC_{full}
-]
-
-至少达到 non-inferior，同时显著降低 memory / computation。
-
-### 目标 3：自适应优于随机
-
-[
-ASLS+U\text{-}VaRFS
->
-RandomLayer+RandomFeature
-]
-
-并显著高于其多随机种子的均值。
-
-### 目标 4：跨模态规律
-
-观察不同医学模态是否形成不同的 DINOv3 layer-selection pattern。
+更强压缩、较低正常loss或工程加速不能补偿检测下降。若局部代理改善而AD未改善，当前代理假设仍未成立。历史test已多轮用于开发，不能把再次评价称为完全未接触的最终测试；锁定设计后统一全六评价，并争取独立验证。
 
 ---
 
@@ -963,3 +656,15 @@ bash run.sh
 - feature sparsity 由 U-VaRFS 学习；
 - detector 保持简单，避免性能提升来自复杂下游网络；
 - 所有主要创新通过统一 BMAD protocol 和严格 ablation 验证。
+
+当前版本为 `gpu-eval-v20-normal-local-selection`，默认172方法、全六1032行。先固定设计验证Liver运行，再统一全六；不要据Liver test更改其余数据集Main。独立重复和只读审计：
+
+```bash
+SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
+SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
+python -m scripts.run_all --seed 123
+python -m scripts.run_all --seed 3407
+python -m scripts.analyze_local_results --results results/gpu-eval-v20-normal-local-selection --out reports/v20
+```
+
+独立seed汇总使用分析器`--seed-results`，要求每个seed全六完整且设计/代码一致；部分回传使用`--completed-only`，不称为全六宏平均。本地实现检查通过不能代替真实检测实验。

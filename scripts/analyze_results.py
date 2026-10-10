@@ -464,6 +464,17 @@ def audit_refitted_exchange_search(result,cfg):
     if (linked!=list(range(search['reference_candidate_count'],len(pool))) or search['solver_iterations']!=iterations or
         search['seconds']<0 or search['objective_evaluations']<sum(t['objective_evaluations'] for t in search['trajectories'])):
         raise ValueError('refitted exchange total candidate linkage/cost differs')
+    if 'performance_objective_cache_mib' in manifest:
+        cache=search.get('objective_cache')
+        limit=int(float(cfg.get('performance_objective_cache_mib',128))*1024**2)
+        if (cache is None or manifest['performance_objective_cache_mib']!=cfg.get('performance_objective_cache_mib',128) or
+            cache['cache_limit_bytes']!=limit or cache['peak_cache_bytes']>limit or
+            any(not isinstance(cache[k],int) or cache[k]<0 for k in ['cache_limit_bytes','peak_cache_bytes',
+                'objective_requests','geometry_evaluations','geometry_reuses','identical_result_reuses']) or
+            cache['objective_requests']!=search['objective_evaluations'] or
+            cache['geometry_evaluations']+cache['geometry_reuses']!=cache['objective_requests'] or
+            cache['identical_result_reuses']>cache['geometry_reuses']):
+            raise ValueError('exact cosine cache memory/cost accounting differs')
     return polishes,iterations,{'support_refits_attempted':refits,'support_exchanges_accepted':accepted,
         'uphill_initial_proposals_refitted':uphill,'refitted_exchange_guards_verified':True}
 
@@ -802,11 +813,34 @@ def audit_fit_only(results,output):
     return data
 
 
-def audit(results: Path, output: Path, draws: int):
+def completed_return_scope(results, frame):
+    """Reject inconsistent partial returns; include only fully evaluated datasets."""
+    states=[]; completed=[]
+    for dataset in DATASETS:
+        folder=results/dataset
+        progress_path=folder/'eval_progress.json'
+        progress=json.loads(progress_path.read_text()) if progress_path.is_file() else {}
+        metrics=(folder/'metrics.csv').is_file()
+        done=progress.get('stage')=='complete'
+        if metrics!=done:
+            raise ValueError(f'{dataset}: metrics and complete evaluation state disagree')
+        if done:
+            completed.append(dataset)
+        states.append({'dataset':dataset,'status':'complete' if done else
+                       'incomplete' if folder.is_dir() else 'absent',
+                       'evaluation_stage':progress.get('stage')})
+    if not completed or set(frame.dataset)!=set(completed) or frame.duplicated(['dataset','method']).any():
+        raise ValueError('partial aggregate must contain exactly the completed datasets without duplicate methods')
+    return completed,states
+
+
+def audit(results: Path, output: Path, draws: int, completed_only=False):
     validate_output(results,output)
     hashes=source_hashes(results)
-    df=pd.read_csv(results/'all_metrics.csv')
-    if sorted(df.dataset.unique())!=sorted(DATASETS) or df.duplicated(['dataset','method']).any():
+    aggregate=results/('all_metrics.csv' if (results/'all_metrics.csv').is_file() or not completed_only else 'all_metrics.partial.csv')
+    df=pd.read_csv(aggregate)
+    datasets,states=completed_return_scope(results,df) if completed_only else (DATASETS,[])
+    if not completed_only and (sorted(df.dataset.unique())!=sorted(DATASETS) or df.duplicated(['dataset','method']).any()):
         raise ValueError('run must contain exactly six datasets without duplicate methods')
     versions=df.experiment_version.unique()
     if len(versions)!=1:
@@ -814,7 +848,7 @@ def audit(results: Path, output: Path, draws: int):
     output.mkdir(parents=True,exist_ok=True)
     summary_rows=[]; diagnostics=[]; paired_rows=[]; prevalence_rows=[]; lambda_rows=[]; zero_rows=[]
     config_hashes=set(); code_hashes=set(); revisions=set()
-    for dataset in DATASETS:
+    for dataset in datasets:
         folder=results/dataset
         source=pd.read_csv(folder/'metrics.csv')
         expected=df[df.dataset==dataset].sort_values('method').reset_index(drop=True)
@@ -854,7 +888,11 @@ def audit(results: Path, output: Path, draws: int):
             raise ValueError(f'{dataset}: unequal memory protocol')
         if any('/good/' not in path.replace('\\','/').lower() for path in fit['normal_train_paths']):
             raise ValueError(f'{dataset}: fit manifest contains a non-normal path')
+        if meta['experiment_version']!=versions[0]:
+            raise ValueError(f'{dataset}: metadata and metric versions disagree')
         cfg=meta['config']; seeds=cfg['random_baseline_seeds']
+        if completed_only and json.loads((folder/'uvarfs_main.json').read_text()).get('objective_definition') not in {COSINE,PERFORMANCE}:
+            raise ValueError('completed-only reporting currently requires a cosine/simplex primary objective')
         for manifest in [fit,memory]:
             paths=manifest['normal_train_paths']; ids=manifest['normal_train_indices']
             if len(paths)!=len(ids) or len(set(ids))!=len(ids) or any(
@@ -968,8 +1006,24 @@ def audit(results: Path, output: Path, draws: int):
         print(f'[audit] {dataset}: {len(predictions)} predictions verified; paired bootstrap complete',flush=True)
     if len(config_hashes)!=1 or len(code_hashes)!=1 or len(revisions)!=1:
         raise ValueError('cross-dataset run provenance differs')
+    # Incomplete datasets must still belong to this exact run, rather than
+    # being silently ignored when their provenance conflicts with final rows.
+    for state in states:
+        path=results/state['dataset']/'run_metadata.json'
+        if not path.is_file():
+            if state['status']!='absent':
+                raise ValueError(f"{state['dataset']}: missing partial run provenance")
+            continue
+        meta=json.loads(path.read_text())
+        digest=hashlib.sha256(json.dumps(meta['config'],sort_keys=True,separators=(',',':')).encode()).hexdigest()
+        if (meta['experiment_version']!=versions[0] or digest!=meta['config_fingerprint'] or
+            digest not in config_hashes or meta['code_fingerprint'] not in code_hashes or meta['git_head'] not in revisions):
+            raise ValueError(f"{state['dataset']}: partial run provenance differs")
     summary=pd.DataFrame(summary_rows)
     returned_summary=pd.read_csv(results/'summary_metrics.csv')
+    if (not set(returned_summary.dataset)<=set(datasets) or
+        returned_summary.duplicated(['dataset','method_family']).any()):
+        raise ValueError('returned summary contains unaudited datasets or duplicate families')
     for _,row in returned_summary.iterrows():
         reference=summary[(summary.dataset==row.dataset)&(summary.method_family==row.method_family)].iloc[0]
         for column in ['image_auroc_mean','image_auroc_std','image_auprc_mean','image_auprc_std','feature_dim_mean']:
@@ -979,15 +1033,19 @@ def audit(results: Path, output: Path, draws: int):
     pd.DataFrame(prevalence_rows).to_csv(output/'image_prevalence.csv',index=False)
     pd.DataFrame(lambda_rows).to_csv(output/'main_lambda_path.csv',index=False)
     pd.DataFrame(zero_rows).to_csv(output/'zero_lambda_diagnostics.csv',index=False)
-    shutil.copyfile(results/'all_metrics.csv',output/'all_metrics.csv')
+    shutil.copyfile(aggregate,output/('completed_metrics.csv' if len(datasets)<len(DATASETS) else 'all_metrics.csv'))
     shutil.copyfile(results/'layer_selection.csv',output/'layer_selection.csv')
     if source_hashes(results)!=hashes:
         raise ValueError('original experiment artifacts changed during the audit')
     data={'experiment_version':versions[0],'git_revision':next(iter(revisions)),
           'config_fingerprint':next(iter(config_hashes)),'code_fingerprint':next(iter(code_hashes)),
+          'analysis_scope':'completed_datasets_only' if len(datasets)<len(DATASETS) else 'all_six_datasets',
+          'completed_datasets':datasets,'dataset_status':states,
+          'source_aggregate':aggregate.name,'anomaly_performance_assessed':True,
+          'all_six_complete':len(datasets)==len(DATASETS),
           'rows':len(df),'diagnostics':diagnostics,'source_sha256':hashes,
           'bootstrap_draws':draws,'bootstrap_unit':'image','bootstrap_seed':42,
-          'bootstrap_batch_size':32,'macro':'equal dataset weight, random seeds averaged within dataset'}
+          'bootstrap_batch_size':32,'macro':f'equal weight over {len(datasets)} completed datasets only, random seeds averaged within dataset'}
     # Verify the recorded source against its Git blobs, independent of host CRLF.
     repo=Path(__file__).resolve().parents[1]
     try:
@@ -1005,21 +1063,24 @@ def audit(results: Path, output: Path, draws: int):
     (output/'analysis_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     report=write_report if versions[0]=='gpu-eval-v4-protocol-fixes' else write_cosine_report if diagnostics[0]['objective_definition'] in {COSINE,PERFORMANCE} else write_current_report
     report(output,df,summary,pd.DataFrame(paired_rows),pd.DataFrame(prevalence_rows),data)
+    return data
 
 
 def write_cosine_report(output,df,summary,paired,prevalence,data):
     """Report the approved new target without borrowing old convex claims."""
-    main=df[df.method=='main'].set_index('dataset').loc[DATASETS]
+    datasets=data.get('completed_datasets',DATASETS)
+    partial=len(datasets)<len(DATASETS)
+    main=df[df.method=='main'].set_index('dataset').loc[datasets]
     macro=summary.groupby('method_family').image_auroc_mean.mean().sort_values(ascending=False)
     table=main[['selected_layers','feature_dim','image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']].reset_index()
     for column in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']:
         table[column]=table[column].map(lambda value:f'{value*100:.2f}' if pd.notna(value) else 'n.a.')
-    comparisons=pd.DataFrame({'dataset':DATASETS})
+    comparisons=pd.DataFrame({'dataset':datasets})
     for family in ['main','gram_main','asls_fixed_budget_uvarfs','asls_compression_uvarfs','layer_l2_asls_compression_uvarfs','asls_raw','asls_pca','asls_selected_raw','gram_asls_selected_raw','layer_l2_asls_selected_raw','layer_l2_gram_asls_selected_raw','asls_random','fixed4_raw','all_raw','all_uvarfs',
                    'gram_asls_pca','gram_asls_random','layer_l2_main','layer_l2_gram_main','layer_l2_asls_raw']:
         if family not in macro:
             continue
-        rows=summary[summary.method_family==family].set_index('dataset').loc[DATASETS]
+        rows=summary[summary.method_family==family].set_index('dataset').loc[datasets]
         comparisons[family]=[f'{row.image_auroc_mean*100:.2f} ± {row.image_auroc_std*100:.2f}' if row.runs>1 else f'{row.image_auroc_mean*100:.2f}' for _,row in rows.iterrows()]
     pairs=paired.copy()
     for column in ['delta_auroc','ci95_lower','ci95_upper']:
@@ -1061,9 +1122,9 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
         'compression_ratio','memory_size','uvarfs_effective_weight_dimension','matching_and_aggregation_seconds',
         'fit_seconds','memory_seconds','eval_seconds','peak_gpu_gb'] if name in df]
     efficiency=df[df.method.isin(['main','gram_main','asls_raw','all_raw','layer_l2_main','layer_l2_gram_main'])][selected_columns].copy()
-    lines=['# Cosine/simplex U-VaRFS 全六回传分析','',
+    lines=['# Cosine/simplex U-VaRFS '+('部分回传分析' if partial else '全六回传分析'),'',
         f'版本 `{data["experiment_version"]}`；Git `{data["git_revision"]}`；共 {len(df)} 行。训练不使用异常标签或 masks，所有 test labels 仅用于本报告评价。', '',
-        f'Main Macro Image AUROC={100*macro["main"]:.2f}%。宏平均按六数据集等权，随机方法先按五 seeds 聚合；全部结果列在同轮对照中，不据 test AUROC 选主输入、目标、lambda 或预算。', '',
+        f'Main {"Image" if len(datasets)==1 else "Macro Image"} AUROC={100*macro["main"]:.2f}%。仅纳入 {len(datasets)}/6 个完整数据集：{", ".join(datasets)}；随机方法先按五 seeds 聚合，不据 test AUROC 选主输入、目标、lambda 或预算。', '',
         '## 主结果','',markdown_table(table,table.columns.tolist()),'',
         '## 同输入、同层与同维对照','',markdown_table(comparisons,comparisons.columns.tolist()),'',
         'gram_* 保留原 quadratic objective 和 v11 稀疏求解；每个输入/目标分支的 PCA/Random 匹配自己的 Main 维数，Random-K 匹配 ASLS 层数。原/新目标会产生不同支持集与维数，应同时看性能和压缩，不能把跨输入变化归因于特征选择。', '',
@@ -1077,16 +1138,20 @@ def write_cosine_report(output,df,summary,paired,prevalence,data):
         '## 压缩与效率','',markdown_table(efficiency.round(6),efficiency.columns.tolist()),'',
         '实际非零维数与有效权重维数均报告，以免用极小权重充数。fit/memory/eval/peak 为整套方法共享开销，包括原目标 warm start 和完整对照；不能重复计作单方法成本，也不能从 GPU 求解宣称科学创新或真实加速。', '',
         '## 来源与实验边界','',
-        f'Git blobs 与保存 code fingerprint 核验：{data["git_blob_code_verified"]}。全局/逐数据集 CSV、逐图 AUROC/AP、随机 mean/sample SD、全部正常清单、ASLS 共享和方法维数核验通过。原始文件 SHA256 在 analysis_data.json，读取前后保持。', '',
+        f'Git blobs 与保存 code fingerprint 核验：{data["git_blob_code_verified"]}。已完成数据集的汇总/逐数据集 CSV、逐图 AUROC/AP、随机 mean/sample SD、全部正常清单、ASLS 共享和方法维数核验通过。原始文件 SHA256 在 analysis_data.json，读取前后保持。', '',
         '原始输入 Main 固定，完整 L2 消融保留；本轮目标升级授权不等于 L2 Main 切换。旧结果不能 resume 或混入当前版本。性能变化需由全部六数据集和 Brain/Liver/RESC localization 一起评估，不能把数学或 fixture 通过当作正向 AD 效果。', '',
         '实验产物与本报告仅保留本地；代码与开发交接按默认授权同步仓库。', '']
     if PERFORMANCE in set(df.get('uvarfs_objective_definition',[])):
-        lines=[line.replace('Cosine/simplex U-VaRFS 全六回传分析','性能优先 U-VaRFS 全六回传分析') for line in lines]
+        lines=[line.replace('Cosine/simplex U-VaRFS','性能优先 U-VaRFS') for line in lines]
         lines=[line for line in lines if not line.startswith(('cosine_simplex_cardinality 的 feasible','新目标非凸且包含离散支持。'))]
         lines+=['## 性能优先协议','',
             'Main 使用 cosine_simplex_fixed_budget：固定既定最大 K，保留原正常 cosine/variability 项，权重 floor/K≤p≤4/K（具体 cap 以 config 为准），不扫 lambda 或优先减少维数。有限候选池先满足正常几何约束，再比较正常完整目标；没有可行候选时明确 fallback，不宣称预算全局不可行。', '',
             'v18 如存在 refitted_support_exchange，交换提案先在同一 capped simplex 重拟合后再比较正常目标；全部 v17 候选保留，并以 asls_fixed_budget_uvarfs 同轮评价。接受时保护已有正常几何可行状态，拒绝提案成本也计入，不证明异常性能必增。', '',
             '旧 cosine/cardinality/lambda Main 以 asls_compression_uvarfs 单独保留，原 quadratic 仍是完整 gram_* 分支。same-support/PCA/Random 匹配各支 Main K。权重 cap 的有效维数下界只限制系数集中，不证明异常 AUROC/AUPRO 改善或独立信息维数。', '']
+    if partial:
+        states=pd.DataFrame(data['dataset_status'])
+        lines[4:4]=['仅评价上述已完成数据集；其余数据集尚无最终评价，不构成全六性能结论，也不能据局部 test 结果修改主输入、目标或超参。','',
+                    markdown_table(states,states.columns.tolist()),'']
     if feasibility_rows:
         frame=pd.DataFrame(feasibility_rows); frame.to_csv(output/'cosine_feasibility_scope.csv',index=False)
         lines+=['## 有限候选池与 lambda 路径可行性','',markdown_table(frame.round(7),frame.columns.tolist()),'',
@@ -1357,19 +1422,31 @@ def main():
     parser.add_argument('--out',type=Path,required=True)
     parser.add_argument('--bootstrap',type=int,default=2000)
     parser.add_argument('--plots-only',action='store_true')
+    parser.add_argument('--completed-only',action='store_true',help='audit only fully evaluated datasets in a partial cosine/simplex return; never claim all-six performance')
     parser.add_argument('--fit-only',action='store_true',help='audit returned normal-fit artifacts without claiming anomaly performance')
     args=parser.parse_args()
+    if args.results is not None and not args.fit_only and not args.plots_only:
+        from uvarfs.objectives import LOCAL
+        metadata_paths=sorted(args.results.glob('*/run_metadata.json'))
+        if metadata_paths and any(json.loads(p.read_text(encoding='utf-8')).get('uvarfs_objective')==LOCAL for p in metadata_paths):
+            if args.bootstrap<100:
+                parser.error('at least 100 bootstrap draws are required')
+            from scripts.analyze_local_results import audit as audit_local
+            audit_local(args.results,args.out,args.completed_only,args.bootstrap)
+            return
     if args.fit_only:
-        if args.results is None or args.plots_only:
-            parser.error('--fit-only requires --results and cannot be combined with --plots-only')
+        if args.results is None or args.plots_only or args.completed_only:
+            parser.error('--fit-only requires --results and cannot be combined with --plots-only/--completed-only')
         audit_fit_only(args.results,args.out)
         return
     if args.plots_only:
+        if args.completed_only:
+            parser.error('--completed-only cannot be combined with --plots-only')
         plot(args.out)
     else:
         if args.results is None or args.bootstrap<100:
             parser.error('--results and at least 100 bootstrap draws are required')
-        audit(args.results,args.out,args.bootstrap)
+        audit(args.results,args.out,args.bootstrap,completed_only=args.completed_only)
 
 
 if __name__=='__main__':

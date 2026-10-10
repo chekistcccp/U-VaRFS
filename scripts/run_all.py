@@ -12,7 +12,7 @@ from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_all_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 from uvarfs.representation import normalization_modes, normalization_prefix
-from uvarfs.objectives import experiment_branches, COSINE, PERFORMANCE
+from uvarfs.objectives import experiment_branches, COSINE, PERFORMANCE, LOCAL
 
 from uvarfs.selection_diagnostics import cosine_feasibility_diagnostics
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
@@ -53,9 +53,13 @@ def main():
     ap.add_argument('--dataset',default='all',help='all or comma-separated processed dataset names')
     ap.add_argument('--force',action='store_true',help='rerun datasets even if results/<dataset>/metrics.csv already exists')
     ap.add_argument('--check-data-only',action='store_true',help='validate normal train, all requested datasets and test masks without loading DINOv3')
+    ap.add_argument('--seed',type=int,help='independent fit/memory seed; writes an isolated seed directory')
     args=ap.parse_args()
 
     cfg=load_config(args.config)
+    if args.seed is not None:
+        cfg['seed']=args.seed
+        cfg['results_dir']=str(Path(cfg['results_dir'])/f'seed{args.seed}')
     expected_method_names(cfg)  # Validate representation conventions before loading DINO.
     set_seed(int(cfg['seed']))
     paths=cfg.get('paths',{})
@@ -132,6 +136,16 @@ def main():
             if 'asls_selected_raw' in cfg['methods']:
                 compatible=compatible and all((out/branch['folder']/'selected_support_control.json').is_file()
                     for branch in experiment_branches(cfg))
+            if cfg['asls'].get('discrete_selection')=='normal_local':
+                compatible=compatible and all((out/branch['folder']/'asls_previous.json').is_file()
+                    for branch in experiment_branches(cfg))
+            for name in ['asls_no_variability','asls_no_rank']:
+                if name+'_uvarfs' in cfg['methods']:
+                    compatible=compatible and all((out/branch['folder']/f'uvarfs_{name}.json').is_file()
+                        for branch in experiment_branches(cfg) if branch['objective']==LOCAL)
+            if 'previous_main' in cfg['methods']:
+                compatible=compatible and all((out/branch['folder']/'uvarfs_previous_main.json').is_file()
+                    for branch in experiment_branches(cfg))
             if compatible:
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
@@ -199,6 +213,7 @@ def main():
                 selected_layers=';'.join(map(str,spec['layers'])),
                 selected_layer_count=len(spec['layers']),
                 feature_dim=dim,candidate_dim=candidate_dim,
+                selected_input_dim=len(spec['layers'])*extractor.hidden_dim,
                 compression_ratio=1.0-dim/max(candidate_dim,1),
                 memory_size=len(memories[r['method']]),experiment_version=EXPERIMENT_VERSION,
                 timing_scope='shared_dataset_all_methods',
@@ -207,6 +222,8 @@ def main():
                 asls_geometry_feasible=spec.get('asls_geometry',{}).get('feasible'),
                 asls_geometry_representation=spec.get('asls_geometry',{}).get('geometry_representation'),
                 asls_geometry_error=spec.get('asls_geometry',{}).get('geometry_error'),
+                asls_geometry_metric=spec.get('asls_geometry',{}).get('geometry_metric','normal_global_cosine_gram_relative_error'),
+                asls_selection_score=spec.get('asls_geometry',{}).get('selection_score'),
                 asls_discrete_selection=spec.get('asls_geometry',{}).get('discrete_selection'),
             )
             if spec['kind']=='selected_raw':
@@ -216,6 +233,22 @@ def main():
                 obj=spec['obj']
                 r.update(uvarfs_objective_definition=obj.get('objective_definition','quadratic_gram'),
                          uvarfs_geometry_metric=obj.get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius'))
+                if obj.get('objective_definition')==LOCAL:
+                    r.update(uvarfs_geometry_error=obj['geometry_error'],uvarfs_geometry_feasible=None,
+                        uvarfs_solver_converged=obj['solver_converged'],uvarfs_objective=obj['objective'],
+                        uvarfs_validation_objective=obj['validation_objective'],uvarfs_selection_score=obj['selection_score'],
+                        uvarfs_selection_policy=obj['selection_policy'],uvarfs_candidate_id=obj['candidate_id'],
+                        uvarfs_objective_certificate_scope=obj['objective_certificate_scope'],
+                        uvarfs_fixed_support_first_order_residual=obj['fixed_support_first_order_residual'],
+                        uvarfs_effective_weight_dimension=obj['effective_weight_dimension'],
+                        uvarfs_local_representation_term=obj['local_representation_term'],
+                        uvarfs_rank_term=obj['rank_term'],uvarfs_variability_term=obj['variability_term'],
+                        uvarfs_weight_cap_factor=obj['weight_cap_factor'],uvarfs_fit_seconds=obj['fit_seconds'],
+                        uvarfs_fixed_feature_budget=obj['fixed_feature_budget'],
+                        uvarfs_maximum_relative_weight=obj['maximum_relative_weight'],
+                        uvarfs_simplex_residual=obj['simplex_residual'],uvarfs_beta=obj['beta'],
+                        uvarfs_rank_weight=obj['rank_weight'])
+                    continue
                 if obj.get('objective_definition') in {COSINE,PERFORMANCE}:
                     if obj['objective_definition']==PERFORMANCE:
                         r.update(uvarfs_weight_cap_factor=obj['weight_cap_factor'],

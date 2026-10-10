@@ -3,12 +3,12 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v18-refitted-support-exchange
+results_dir: results/gpu-eval-v20-normal-local-selection
 
 representation:
-  # Primary protocol stays raw pending explicit approval of an input change.
-  layer_normalization: none
-  ablation_layer_normalization: l2
+  # One declared cosine geometry for layer fit, feature fit, memory and query.
+  layer_normalization: l2
+  ablation_layer_normalization: none
 
 model:
   modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
@@ -21,6 +21,7 @@ model:
 data:
   fit_images: 256
   variability_images: 96
+  normal_holdout_fraction: 0.25  # 192 fit + 64 holdout, within the original 256
   patches_per_image: 16
   variability_epsilon: 1.0e-6
   memory_size: 20000
@@ -30,8 +31,10 @@ data:
 
 asls:
   geometry_representation: patch
-  # User-authorized sparse selection upgrade; the prefix remains an ablation.
-  discrete_selection: geometry_search
+  # Performance proxy across the entire 2--6 layer budget; no min-K priority.
+  discrete_selection: normal_local
+  local_neighbor_rank: 8
+  local_rank_weight: 1.0
   geometry_tolerance: 0.05
   variability_weight: 0.15
   sparsity_weight: 0.02
@@ -42,14 +45,20 @@ asls:
   max_layers: 6
 
 uvarfs:
-  # User-approved method upgrade; original objective is a full paired control.
-  objective: cosine_simplex_fixed_budget
+  # v20 explicitly changes the proxy objective; full legacy controls remain.
+  objective: normal_local_fixed_budget
+  local_neighbor_rank: 8
+  local_rank_weight: 1.0
+  local_refit_max_iter: 150
+  local_exchange_max_steps: 2
+  local_exchange_candidates: 4
   # User requests performance priority: fixed maximum K, bounded relative weights.
   performance_weight_cap_factor: 4.0
-  # Same fixed-budget objective: judge swaps after capped weight refitting.
+  # The following exchange/cache settings belong to the previous cosine control.
   performance_exchange_strategy: refit_before_accept
   performance_exchange_max_steps: 8
   performance_exchange_candidates: 8
+  performance_objective_cache_mib: 128  # bounded exact last-state reuse; 0 disables
   ablation_objective: quadratic_gram
   sparsity_strategy: objective_forward_refit
   cosine_support_step: 32
@@ -84,6 +93,10 @@ uvarfs:
 
 methods:
   - main
+  - asls_no_variability_uvarfs
+  - asls_no_rank_uvarfs
+  # Complete previous ASLS + fixed-budget cosine method under shared v20 data.
+  - previous_main
   - last_raw
   - fixed4_raw
   - all_raw

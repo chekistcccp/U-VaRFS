@@ -5,9 +5,9 @@ import json
 import math
 from pathlib import Path
 from .representation import normalization_modes, normalization_prefix
-from .objectives import experiment_branches
+from .objectives import experiment_branches, methods_for_objective
 
-EXPERIMENT_VERSION = 'gpu-eval-v18-refitted-support-exchange'
+EXPERIMENT_VERSION = 'gpu-eval-v20-normal-local-selection'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
@@ -22,7 +22,9 @@ def expected_method_names(cfg):
     if len(names) != len(set(names)):
         raise ValueError('duplicate methods or random baseline seeds')
     base=names.copy()
-    names=[branch['prefix']+name for branch in experiment_branches(cfg) for name in base]
+    local_only={'asls_no_variability_uvarfs','asls_no_rank_uvarfs'}
+    names=[branch['prefix']+name for branch in experiment_branches(cfg) for name in base
+           if name not in local_only or name in methods_for_objective(cfg,branch['objective'])]
     if len(names)!=len(set(names)):
         raise ValueError('normalization ablation method names collide')
     return sorted(names)

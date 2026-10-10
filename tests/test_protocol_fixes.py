@@ -273,14 +273,14 @@ def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,mo
     cfg['model'].update(input_size=8,batch_size=2,num_workers=0)
     cfg['data'].update(fit_images=4,variability_images=4,patches_per_image=4,
                        memory_images=4,memory_patches_per_image=4,memory_size=5,test_batch_size=2)
-    cfg['asls'].update(steps=10,geometry_tolerance=.8)
+    cfg['asls'].update(steps=10,geometry_tolerance=.8,discrete_selection='geometry_search')
     # The patch case uses the production default; the pooled case is an explicit ablation.
     if geometry_representation=='pooled':
         cfg['asls']['geometry_representation']='pooled'
         cfg['methods']=[name.replace('asls_pooled_','asls_patch_') for name in cfg['methods']]
     # Preserve the historical 37-method v9 protocol as an explicit regression.
     cfg['uvarfs'].update(objective='quadratic_gram',ablation_objective=None)
-    cfg['methods']=[m for m in cfg['methods'] if m not in {'asls_exchange_refit_uvarfs','asls_selected_raw','asls_compression_uvarfs','asls_fixed_budget_uvarfs'}]
+    cfg['methods']=[m for m in cfg['methods'] if m not in {'asls_exchange_refit_uvarfs','asls_selected_raw','asls_compression_uvarfs','asls_fixed_budget_uvarfs','previous_main','asls_no_variability_uvarfs','asls_no_rank_uvarfs'}]
     cfg['uvarfs'].update(sparsity_strategy='objective_exchange_refit',min_features=2,max_features=4,max_iter=400,
                          lambda_grid=[.01,.0001,.000001],geometry_tolerance=.8)
     cfg['eval'].update(bootstrap_samples=0,max_heatmaps_per_dataset=2)

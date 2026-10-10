@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 import numpy as np
 import torch
+from .cosine_cache import CachedCosineObjective
 from .cosine_uvarfs import CosineObjective, covering_support, refit_simplex, exchange_simplex
 from .numerics import precise_matmul
 from .objectives import PERFORMANCE
@@ -155,7 +156,8 @@ def fit_performance_uvarfs(x,variability,cfg,gram_control,label='uvarfs:performa
     added_started=time.time()
     if strategy=='pre_refit_descent':
         return reference
-    engine=CosineObjective(x,variability,float(cfg.get('beta',.002)),int(cfg.get('cosine_geometry_chunk',512)))
+    engine=CachedCosineObjective(x,variability,float(cfg.get('beta',.002)),int(cfg.get('cosine_geometry_chunk',512)),
+        float(cfg.get('performance_objective_cache_mib',128)))
     cap=float(cfg.get('performance_weight_cap_factor',4.));floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
     tolerance=float(cfg.get('geometry_tolerance',.05));count=len(reference['active'])
     project=lambda weights,mass:project_bounded_simplex(weights,mass,cap)
@@ -211,10 +213,12 @@ def fit_performance_uvarfs(x,variability,cfg,gram_control,label='uvarfs:performa
         'exchange_search':{'strategy':'refit_before_accept','reference_candidate_count':len(reference['candidate_pool']),
             'reference_selected_candidate_id':reference['candidate_id'],'trajectories':trajectories,
             'solver_iterations':sum(t['solver_iterations'] for t in trajectories),
-            'objective_evaluations':engine.evaluations,'seconds':time.time()-added_started},
+            'objective_evaluations':engine.evaluations,'seconds':time.time()-added_started,
+            'objective_cache':engine.cache_diagnostics()},
         'solver_manifest':{**reference['solver_manifest'],
             'candidate_types':['uniform_reference','optimized','refitted_exchange'],
             'performance_exchange_strategy':strategy,
+            'performance_objective_cache_mib':float(cfg.get('performance_objective_cache_mib',128)),
             'performance_exchange_max_steps':int(cfg.get('performance_exchange_max_steps',8)),
             'performance_exchange_candidates':int(cfg.get('performance_exchange_candidates',8)),
             'objective_evaluations':reference['solver_manifest']['objective_evaluations']+engine.evaluations}}

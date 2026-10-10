@@ -11,7 +11,8 @@ from .asls import fit_asls, reselect_asls
 from .u_varfs import fit_uvarfs
 from .cosine_uvarfs import fit_cosine_uvarfs
 from .performance_uvarfs import fit_performance_uvarfs, fit_fixed_budget_reference
-from .objectives import COSINE, QUADRATIC, PERFORMANCE, objective_modes, experiment_branches
+from .objectives import COSINE, QUADRATIC, PERFORMANCE, LOCAL, objective_modes, experiment_branches, methods_for_objective
+from .local_uvarfs import fit_local_uvarfs, fit_local_asls
 from .transforms import fit_pca
 from .utils import save_json
 from .variability import NormalVariability
@@ -42,6 +43,21 @@ def collect_normal_inputs(extractor, train_samples, cfg):
     var_n = int(cfg["data"]["variability_images"])
     ppi = int(cfg["data"]["patches_per_image"])
     ids = _sample_indices(len(train_samples), fit_n, seed)
+    local_protocol = cfg['asls'].get('discrete_selection') == 'normal_local'
+    if LOCAL in objective_modes(cfg)[1] and not local_protocol:
+        raise ValueError('normal-local U-VaRFS requires the image-disjoint normal-local ASLS protocol')
+    holdout_n = 0
+    if local_protocol:
+        # Randomize image order before reserving holdout. All existing nuisance
+        # forwards stay in the fitting partition, within the original 256 images.
+        np.random.default_rng(seed+1907).shuffle(ids)
+        fraction=float(cfg['data'].get('normal_holdout_fraction',.25))
+        if not 0<fraction<1:
+            raise ValueError('normal holdout fraction must lie strictly between zero and one')
+        holdout_n = max(1, int(round(len(ids)*fraction)))
+        if len(ids)-holdout_n < max(2,min(var_n,len(ids))):
+            raise ValueError('normal holdout leaves too few fit/variability images')
+    fit_count = len(ids)-holdout_n
     ds = BMADDataset(train_samples, int(cfg["model"]["input_size"]), False)
     dl = DataLoader(
         Subset(ds, ids.tolist()),
@@ -52,6 +68,8 @@ def collect_normal_inputs(extractor, train_samples, cfg):
     _,modes=normalization_modes(cfg)
     pooled = {mode:{i: [] for i in layers} for mode in modes}
     patchbuf = {i: [] for i in layers}
+    perturbbuf = {kind:{i:[] for i in layers} for kind in PERTURBATIONS}
+    patch_groups=[]
     statistics = {mode:{i: NormalVariability(extractor.hidden_dim, PERTURBATIONS,
                     float(cfg['data'].get('variability_epsilon',1e-6))) for i in layers} for mode in modes}
     patch_manifest = []
@@ -64,6 +82,7 @@ def collect_normal_inputs(extractor, train_samples, cfg):
         b = x.shape[0]
         p = next(iter(feats.values())).shape[1]
         patch_ids = _patch_ids(p, ppi, seed + global_pos)
+        patch_groups.extend(np.repeat(np.arange(global_pos,global_pos+b),len(patch_ids)).tolist())
         patch_manifest.append({'image_offset':global_pos,'batch_images':b,'patch_indices':patch_ids.tolist()})
         for l in layers:
             patchbuf[l].append(feats[l][:, patch_ids, :].reshape(-1, extractor.hidden_dim).cpu())
@@ -83,6 +102,9 @@ def collect_normal_inputs(extractor, train_samples, cfg):
                     statistics[mode][l].add_normal(base[mode][l])
             for kind in PERTURBATIONS:
                 pert = extractor(perturb_batch(xvar, kind, generator=generator))
+                if local_protocol:
+                    for l in layers:
+                        perturbbuf[kind][l].append(pert[l][:,patch_ids,:].reshape(-1,extractor.hidden_dim).cpu())
                 for mode in modes:
                     view=normalize_layers(pert,mode)
                     for l in layers:
@@ -102,11 +124,33 @@ def collect_normal_inputs(extractor, train_samples, cfg):
                'perturbation_rng':{'recipe':'sha256:uvarfs-normal-noise-v1:seed:dataset:image_offset',
                                    'base_seed':seed,'dataset':train_samples[0].dataset,'noise_batches':noise_manifest}}
     collected={}
+    groups=torch.tensor(patch_groups,device=device)
+    fitting=groups<fit_count
+    if local_protocol:
+        manifest['normal_selection_split']={
+            'unit':'image','patient_disjoint_claimed':False,
+            'recipe':'shuffle sampled image indices with seed+1907; reserve final fraction',
+            'fit_image_positions':list(range(fit_count)),
+            'holdout_image_positions':list(range(fit_count,len(ids))),
+            'fit_patch_groups':groups[fitting].cpu().tolist(),
+            'holdout_patch_groups':groups[~fitting].cpu().tolist(),
+            'fit_patch_rows':int(fitting.sum()),'holdout_patch_rows':int((~fitting).sum()),
+            'holdout_used_for_gradients':False,'holdout_used_for_selection_reference':False,
+            'final_memory_uses_official_normal_train_after_selection':True}
     for mode in modes:
-        collected[mode]={'patches':normalize_layers(raw_patches,mode),
-                         'pooled':{l:torch.cat(v).to(device) for l,v in pooled[mode].items()},
+        normalized=normalize_layers(raw_patches,mode)
+        collected[mode]={'patches':{l:v[fitting] if local_protocol else v for l,v in normalized.items()},
+                         'pooled':{l:torch.cat(v).to(device)[:fit_count] for l,v in pooled[mode].items()},
                          'variabilities':{l:statistics[mode][l].vectors().to(device) for l in layers},
                          'manifest':manifest}
+        if local_protocol:
+            pert={l:torch.stack([normalize_layers({l:torch.cat(perturbbuf[kind][l]).to(device)},mode)[l]
+                                for kind in PERTURBATIONS]) for l in layers}
+            paired_count=next(iter(pert.values())).shape[1]
+            collected[mode].update(heldout={l:v[~fitting] for l,v in normalized.items()},
+                groups=groups[fitting],heldout_groups=groups[~fitting],
+                paired_clean={l:v[:paired_count] for l,v in normalized.items()},paired_perturbations=pert)
+            manifest['normal_selection_split']['paired_patch_rows']=paired_count
     return collected
 
 
@@ -121,7 +165,8 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
                'variability_feature_space':mode,
                'variability_vectors':{str(l):v.cpu().tolist() for l,v in var_vectors.items()}},dataset_out/'fit_manifest.json')
     layer_var = {l: float(var_vectors[l].mean().cpu()) for l in pooled}
-    cache_key=json.dumps([cfg['asls'],cfg['methods']],sort_keys=True)
+    comparison_methods=[m for m in cfg['methods'] if any(m.startswith('asls_'+name+'_') for name in ['pooled','patch','geometry_search','gate_prefix'])]
+    cache_key=json.dumps([cfg['asls'],comparison_methods],sort_keys=True)
     if inputs.get('asls_cache_key')==cache_key:
         for name,result in inputs['asls_artifacts'].items():
             save_json(result,dataset_out/name)
@@ -129,13 +174,22 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
     representation=cfg['asls'].get('geometry_representation','patch')
     inputs={'pooled':pooled,'patch':patches}
     print(f"[fit] ASLS start: geometry={representation} layers={len(pooled)} samples={next(iter(inputs[representation].values())).shape[0]}", flush=True)
-    asls = fit_asls(inputs[representation], layer_var, cfg["asls"])
+    legacy_cfg={**cfg['asls'],'discrete_selection':'geometry_search'}
+    local_protocol=cfg['asls'].get('discrete_selection')=='normal_local'
+    legacy_asls=fit_asls(inputs[representation],layer_var,legacy_cfg if local_protocol else cfg['asls'])
+    if local_protocol:
+        source=collected[mode]
+        asls=fit_local_asls(patches,source['heldout'],source['groups'],source['heldout_groups'],
+            (source['paired_clean'],source['paired_perturbations']),cfg['asls'])
+        save_json(legacy_asls,dataset_out/'asls_previous.json')
+    else:
+        asls=legacy_asls
     asls['layer_normalization']=mode
     comparisons={representation:asls}
     for other in ['pooled','patch']:
         if other!=representation and any(method.startswith(f'asls_{other}_') for method in cfg['methods']):
             print(f'[fit] ASLS {other} geometry ablation',flush=True)
-            comparisons[other]=fit_asls(inputs[other],layer_var,{**cfg['asls'],'geometry_representation':other})
+            comparisons[other]=fit_asls(inputs[other],layer_var,{**legacy_cfg,'geometry_representation':other})
     for geometry_mode,result in comparisons.items():
         save_json(result,dataset_out/f'asls_{geometry_mode}.json')
     # Keep only selection metadata here; optimizer traces live in separate files.
@@ -144,7 +198,7 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
     asls['selection_comparisons']={}
     for rule in ['gate_prefix','geometry_search']:
         if any(method.startswith(f'asls_{rule}_') for method in cfg['methods']):
-            selection=reselect_asls(asls,cfg['asls'],rule)
+            selection=reselect_asls(legacy_asls,legacy_cfg,rule)
             print(f'[fit] ASLS {rule} ablation: evaluated={selection["evaluated_subsets"]} '
                   f'layers={selection["selected_layers"]} feasible={selection["feasible"]}',flush=True)
             save_json(selection,dataset_out/f'asls_{rule}.json')
@@ -159,6 +213,8 @@ def fit_representation(extractor, train_samples, cfg, dataset_out, collected=Non
 
 
 def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None, gram_cache=None, method_prefix=''):
+    if collected is None:
+        collected=collect_normal_inputs(extractor,train_samples,cfg)
     patches, variabilities, asls = fit_representation(extractor, train_samples, cfg, dataset_out,collected)
     input_mode,_=normalization_modes(cfg)
     selected = asls["selected_layers"]
@@ -184,7 +240,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         audit=result.get('budget_geometry_audit')
         mass=audit['coordinate_reference_alignment'] if audit is not None else []
         by_layer={str(l):sum(mass[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim]) for i,l in enumerate(layers)}
-        relative=result.get('budgeted_weights',[]) if result.get('objective_definition') in {COSINE,PERFORMANCE} else []
+        relative=result.get('budgeted_weights',[]) if result.get('objective_definition') in {COSINE,PERFORMANCE,LOCAL} else []
         relative_by_layer={str(l):float(sum(relative[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim])) for i,l in enumerate(layers)} if len(relative) else None
         save_json({'layers':layers,'layer_normalization':input_mode,
                    'normal_reference_alignment_by_layer':by_layer if mass else None,
@@ -204,8 +260,13 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
     def fit_uv(name, layers):
         key=tuple(layers)
         if key not in uv_cache:
-            old=fit_gram(name,layers)
-            if objective in {COSINE,PERFORMANCE}:
+            if objective==LOCAL:
+                source=collected[input_mode]
+                join=lambda values:torch.cat([values[l] for l in layers],dim=-1)
+                uv_cache[key]=fit_local_uvarfs(join(patches),join(source['heldout']),source['groups'],source['heldout_groups'],
+                    (join(source['paired_clean']),join(source['paired_perturbations'])),cfg['uvarfs'],label=f'uvarfs:{name}:local')
+            elif objective in {COSINE,PERFORMANCE}:
+                old=fit_gram(name,layers)
                 x=torch.cat([patches[l] for l in layers],dim=-1)
                 v=torch.cat([variabilities[l] for l in layers],dim=1)
                 if objective==PERFORMANCE:
@@ -217,7 +278,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
                 else:
                     uv_cache[key]=fit_cosine_uvarfs(x,v,cfg['uvarfs'],old,label=f'uvarfs:{name}:{objective}')
             else:
-                uv_cache[key]=old
+                uv_cache[key]=fit_gram(name,layers)
         r=uv_cache[key]
         save_uv(name,layers,r)
         return r
@@ -239,6 +300,25 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         "fixed4_uvarfs": {"layers": fixed, "kind": "uvarfs", "obj": fixed_uv},
         "all_uvarfs": {"layers": all_layers, "kind": "uvarfs", "obj": all_uv},
     }
+    if objective==LOCAL:
+        source=collected[input_mode]
+        for name,beta,rank_weight in [('asls_no_variability_uvarfs',0.,float(cfg['uvarfs'].get('local_rank_weight',1.))),
+                                      ('asls_no_rank_uvarfs',float(cfg['uvarfs']['beta']),0.)]:
+            if name in enabled:
+                join=lambda values:torch.cat([values[l] for l in selected],dim=-1)
+                obj=fit_local_uvarfs(xsel,join(source['heldout']),source['groups'],source['heldout_groups'],
+                    (join(source['paired_clean']),join(source['paired_perturbations'])),
+                    {**cfg['uvarfs'],'beta':beta,'local_rank_weight':rank_weight},label='uvarfs:'+name)
+                save_uv(name.removesuffix('_uvarfs'),selected,obj)
+                specs[name]={'layers':selected,'kind':'uvarfs','obj':obj}
+    if 'previous_main' in enabled:
+        previous=json.loads((dataset_out/'asls_previous.json').read_text(encoding='utf-8'))
+        pl=previous['selected_layers']; px=torch.cat([patches[l] for l in pl],1)
+        pv=torch.cat([variabilities[l] for l in pl],1)
+        old=fit_gram('previous_main',pl)
+        obj=fit_performance_uvarfs(px,pv,cfg['uvarfs'],old,label='uvarfs:previous_main')
+        save_uv('previous_main',pl,obj)
+        specs['previous_main']={'layers':pl,'kind':'uvarfs','obj':obj,'asls_geometry':previous}
     if 'asls_fixed_budget_uvarfs' in enabled:
         cache=gram_cache.setdefault('fixed_budget_controls',{})
         key=tuple(selected)
@@ -302,7 +382,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         specs['asls_exchange_refit_uvarfs']={'layers':selected,'kind':'uvarfs','obj':obj,
             'asls_geometry':asls['geometry_comparisons'][asls['geometry_representation']]}
     if 'legacy_main' in enabled:
-        prefix=reselect_asls(asls,cfg['asls'],'gate_prefix')
+        prefix=reselect_asls(json.loads((dataset_out/'asls_previous.json').read_text(encoding='utf-8')) if cfg['asls'].get('discrete_selection')=='normal_local' else asls,cfg['asls'],'gate_prefix')
         prefix_uv=fit_gram('asls_gate_prefix',prefix['selected_layers'])
         obj=prefix_uv.get('legacy_top_weights',prefix_uv)
         save_uv('legacy_main',prefix['selected_layers'],obj)
@@ -357,6 +437,7 @@ def fit_all_method_specs(extractor, train_samples, cfg, dataset_out):
     for branch in experiment_branches(cfg):
         mode=branch['layer_normalization']; prefix=branch['prefix']
         settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None},
+                  'methods':methods_for_objective(cfg,branch['objective']),
                   'uvarfs':{**cfg['uvarfs'],'objective':branch['objective'],'ablation_objective':None}}
         output=dataset_out/branch['folder']
         fitted=fit_method_specs(extractor,train_samples,settings,output,collected,caches[mode],method_prefix=prefix)

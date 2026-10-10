@@ -389,7 +389,7 @@ def fit_uvarfs(X: torch.Tensor, variability_vectors: torch.Tensor, cfg: dict, la
 
 
 def apply_uvarfs(x: torch.Tensor, result: dict) -> torch.Tensor:
-    if result.get('objective_definition') in {'cosine_simplex_cardinality','cosine_simplex_fixed_budget'}:
+    if result.get('objective_definition') in {'cosine_simplex_cardinality','cosine_simplex_fixed_budget','normal_local_fixed_budget'}:
         x=x.float()  # Fit/memory/query use the same FP32 relative coefficients.
     idx=torch.as_tensor(result['active'],device=x.device,dtype=torch.long)
     scales=torch.as_tensor(result['scales'],device=x.device,dtype=x.dtype)
