@@ -218,7 +218,7 @@ def test_runner_preflight_checks_masks_and_all_six_without_loading_model(tmp_pat
     save_image(root/'test'/'good'/'img'/'normal.png',np.zeros((8,8)))
     save_image(root/'test'/'Ungood'/'img'/'abnormal.jpg',np.zeros((8,8)))
     save_image(root/'test'/'Ungood'/'anomaly_mask'/'abnormal_mask.png',np.ones((8,8))*255)
-    cfg = load_config(repo/'configs'/'default.yaml')
+    cfg = load_config(repo/'configs'/'v20_control.yaml')
     cfg['paths']['processed_data'] = str(tmp_path/'BMAD')
     cfg['results_dir'] = str(tmp_path/'output')
     config_path = tmp_path/'config.yaml'
@@ -268,7 +268,7 @@ class CPUExactIndex:
 @pytest.mark.parametrize('geometry_representation',['pooled','patch'])
 def test_cpu_fixture_full_fit_memory_evaluation_and_randomk_fairness(tmp_path,monkeypatch,geometry_representation):
     monkeypatch.setattr('uvarfs.pipeline_eval.make_index',lambda memory,cfg:CPUExactIndex(memory))
-    cfg = load_config(Path(__file__).resolve().parents[1]/'configs'/'default.yaml')
+    cfg = load_config(Path(__file__).resolve().parents[1]/'configs'/'v20_control.yaml')
     cfg['representation']['ablation_layer_normalization']=None
     cfg['model'].update(input_size=8,batch_size=2,num_workers=0)
     cfg['data'].update(fit_images=4,variability_images=4,patches_per_image=4,

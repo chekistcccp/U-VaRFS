@@ -11,7 +11,8 @@ from .asls import fit_asls, reselect_asls
 from .u_varfs import fit_uvarfs
 from .cosine_uvarfs import fit_cosine_uvarfs
 from .performance_uvarfs import fit_performance_uvarfs, fit_fixed_budget_reference
-from .objectives import COSINE, QUADRATIC, PERFORMANCE, LOCAL, objective_modes, experiment_branches, methods_for_objective
+from .objectives import COSINE, QUADRATIC, PERFORMANCE, LOCAL, MATCHING, objective_modes, experiment_branches, methods_for_objective
+from .matching_uvarfs import fit_matching_uvarfs
 from .local_uvarfs import fit_local_uvarfs, fit_local_asls
 from .transforms import fit_pca
 from .utils import save_json
@@ -44,7 +45,7 @@ def collect_normal_inputs(extractor, train_samples, cfg):
     ppi = int(cfg["data"]["patches_per_image"])
     ids = _sample_indices(len(train_samples), fit_n, seed)
     local_protocol = cfg['asls'].get('discrete_selection') == 'normal_local'
-    if LOCAL in objective_modes(cfg)[1] and not local_protocol:
+    if {LOCAL,MATCHING} & set(objective_modes(cfg)[1]) and not local_protocol:
         raise ValueError('normal-local U-VaRFS requires the image-disjoint normal-local ASLS protocol')
     holdout_n = 0
     if local_protocol:
@@ -240,7 +241,7 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
         audit=result.get('budget_geometry_audit')
         mass=audit['coordinate_reference_alignment'] if audit is not None else []
         by_layer={str(l):sum(mass[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim]) for i,l in enumerate(layers)}
-        relative=result.get('budgeted_weights',[]) if result.get('objective_definition') in {COSINE,PERFORMANCE,LOCAL} else []
+        relative=result.get('budgeted_weights',[]) if result.get('objective_definition') in {COSINE,PERFORMANCE,LOCAL,MATCHING} else []
         relative_by_layer={str(l):float(sum(relative[i*extractor.hidden_dim:(i+1)*extractor.hidden_dim])) for i,l in enumerate(layers)} if len(relative) else None
         save_json({'layers':layers,'layer_normalization':input_mode,
                    'normal_reference_alignment_by_layer':by_layer if mass else None,
@@ -260,11 +261,12 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
     def fit_uv(name, layers):
         key=tuple(layers)
         if key not in uv_cache:
-            if objective==LOCAL:
+            if objective in {LOCAL,MATCHING}:
                 source=collected[input_mode]
                 join=lambda values:torch.cat([values[l] for l in layers],dim=-1)
-                uv_cache[key]=fit_local_uvarfs(join(patches),join(source['heldout']),source['groups'],source['heldout_groups'],
-                    (join(source['paired_clean']),join(source['paired_perturbations'])),cfg['uvarfs'],label=f'uvarfs:{name}:local')
+                fitter=fit_matching_uvarfs if objective==MATCHING else fit_local_uvarfs
+                uv_cache[key]=fitter(join(patches),join(source['heldout']),source['groups'],source['heldout_groups'],
+                    (join(source['paired_clean']),join(source['paired_perturbations'])),cfg['uvarfs'],label=f'uvarfs:{name}:{objective}')
             elif objective in {COSINE,PERFORMANCE}:
                 old=fit_gram(name,layers)
                 x=torch.cat([patches[l] for l in layers],dim=-1)
@@ -309,6 +311,18 @@ def fit_method_specs(extractor, train_samples, cfg, dataset_out, collected=None,
                 obj=fit_local_uvarfs(xsel,join(source['heldout']),source['groups'],source['heldout_groups'],
                     (join(source['paired_clean']),join(source['paired_perturbations'])),
                     {**cfg['uvarfs'],'beta':beta,'local_rank_weight':rank_weight},label='uvarfs:'+name)
+                save_uv(name.removesuffix('_uvarfs'),selected,obj)
+                specs[name]={'layers':selected,'kind':'uvarfs','obj':obj}
+    if objective==MATCHING:
+        source=collected[input_mode]
+        join=lambda values:torch.cat([values[l] for l in selected],dim=-1)
+        for name,overrides in [('asls_no_variability_uvarfs',{'beta':0.}),
+                              ('asls_no_score_uvarfs',{'matching_score_weight':0.}),
+                              ('asls_no_distribution_uvarfs',{'matching_distribution_weight':0.})]:
+            if name in enabled:
+                obj=fit_matching_uvarfs(xsel,join(source['heldout']),source['groups'],source['heldout_groups'],
+                    (join(source['paired_clean']),join(source['paired_perturbations'])),
+                    {**cfg['uvarfs'],**overrides},label='uvarfs:'+name)
                 save_uv(name.removesuffix('_uvarfs'),selected,obj)
                 specs[name]={'layers':selected,'kind':'uvarfs','obj':obj}
     if 'previous_main' in enabled:
@@ -438,7 +452,7 @@ def fit_all_method_specs(extractor, train_samples, cfg, dataset_out):
         mode=branch['layer_normalization']; prefix=branch['prefix']
         settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None},
                   'methods':methods_for_objective(cfg,branch['objective']),
-                  'uvarfs':{**cfg['uvarfs'],'objective':branch['objective'],'ablation_objective':None}}
+                  'uvarfs':{**cfg['uvarfs'],'objective':branch['objective'],'ablation_objective':None,'control_objectives':[]}}
         output=dataset_out/branch['folder']
         fitted=fit_method_specs(extractor,train_samples,settings,output,collected,caches[mode],method_prefix=prefix)
         specs.update({prefix+name:spec for name,spec in fitted.items()})

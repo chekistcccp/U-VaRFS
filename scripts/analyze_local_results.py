@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Read-only v20 auditing; result files and reports remain outside Git."""
+"""Read-only v20/v21 auditing; result files and reports remain outside Git."""
 from __future__ import annotations
 import argparse
 import json
 import itertools
+import hashlib
 from pathlib import Path
 import numpy as np
 import pandas as pd
 
 from uvarfs.protocol import BMAD_DATASETS, EXPERIMENT_VERSION, config_fingerprint, expected_method_names
-from uvarfs.objectives import LOCAL, QUADRATIC, COSINE, PERFORMANCE, experiment_branches
+from uvarfs.objectives import LOCAL, MATCHING, QUADRATIC, COSINE, PERFORMANCE, experiment_branches
 from scripts.analyze_results import (source_hashes, validate_output, WeightedRanking,
     paired_bootstrap, verify_recorded_code, audit_sparse_path)
 
@@ -31,6 +32,8 @@ def audit_solver_result(path, cfg):
         objective=QUADRATIC
     if objective==LOCAL:
         return audit_local_solution(result,cfg)
+    if objective==MATCHING:
+        return audit_matching_solution(result,cfg)
     if objective in {QUADRATIC,COSINE,PERFORMANCE}:
         return audit_sparse_path(result,cfg)
     raise ValueError('missing or unknown solver objective identity')
@@ -78,6 +81,79 @@ def audit_local_solution(result, cfg):
     return True
 
 
+def audit_matching_solution(result, cfg):
+    if (result['objective_definition']!=MATCHING or result['global_optimality_claimed'] or
+            result['support_generation_uses_holdout'] or result['feasible'] is not None or
+            result['objective_dtype']!='float64' or
+            result['reference_policy']!='all_normal_fit_patches_excluding_same_image' or
+            result['objective_certificate_scope']!='fixed_support_current_nearest_branch_projected_residual_only' or
+            not np.isfinite(result['temperature_fit_only']) or result['temperature_fit_only']<.01):
+        raise ValueError('wrong matching objective/protocol/certificate')
+    weights=np.asarray(result['budgeted_weights'],float); active=np.asarray(result['active'],int)
+    k=min(int(cfg['max_features']),len(weights));floor=float(cfg.get('cosine_weight_floor_mass',1e-4))
+    cap=min(1.,float(cfg.get('performance_weight_cap_factor',4.))/k)
+    def check_support(ca,cp):
+        ca=np.asarray(ca,int);cp=np.asarray(cp,float)
+        if (len(ca)!=k or cp.shape!=ca.shape or len(set(ca))!=k or (ca<0).any() or
+            (ca>=len(weights)).any() or not np.isfinite(cp).all() or
+            abs(cp.sum()-1)>1e-8 or cp.min()<floor/k-1e-10 or cp.max()>cap+1e-10):
+            raise ValueError('matching fixed-K simplex bounds violated')
+    check_support(active,weights[active])
+    p=weights[active]
+    if np.count_nonzero(weights)!=k or not np.allclose(np.sqrt(p),result['scales'],rtol=1e-9,atol=1e-10):
+        raise ValueError('matching scales/support disagree')
+    if not np.isclose(1/np.square(p).sum(),result['effective_weight_dimension'],rtol=1e-9):
+        raise ValueError('matching effective dimension mismatch')
+    pool=result['candidate_pool'];training_pool=[]
+    maximum=3*(2+2*int(cfg.get('matching_exchange_max_steps',2))*int(cfg.get('matching_exchange_candidates',4)))
+    if not 1<=len(pool)<=maximum or result['fixed_feature_budget']!=k:
+        raise ValueError('matching candidate or feature budget mismatch')
+    for key in ['fit_score_scale','fit_distribution_scale','fit_nuisance_scale',
+                'validation_score_scale','validation_distribution_scale']:
+        if not np.isfinite(result[key]) or result[key]<=0:
+            raise ValueError('invalid matching normalization scale')
+    remove={'validation_valid','validation_error','validation_objective','validation_terms','selection_score'}
+    def total(terms):
+        return result['score_weight']*terms['normal_match_score_relative_mse']+result['distribution_weight']*terms['normal_neighbor_distribution_kl_relative']+terms['variability_term']
+    for i,c in enumerate(pool):
+        check_support(c['active'],c['weights'])
+        if c['candidate_id']!=i or not np.isclose(total(c['training_terms']),c['training_objective'],rtol=1e-8,atol=1e-9):
+            raise ValueError('matching training candidate identity/terms disagree')
+        if not np.isclose(c['training_terms']['variability_term'],result['beta']*c['training_terms']['relative_variability'],rtol=1e-8,atol=1e-9):
+            raise ValueError('matching nuisance coefficient mismatch')
+        if c['validation_valid']:
+            val=total(c['validation_terms'])
+            if c['validation_terms']['variability_term']!=0 or not np.allclose(
+                [val,val+c['training_terms']['variability_term']],
+                [c['validation_objective'],c['selection_score']],rtol=1e-8,atol=1e-9):
+                raise ValueError('matching holdout score mismatch')
+        elif 'zero sparse' not in c.get('validation_error',''):
+            raise ValueError('unexplained invalid matching holdout candidate')
+        if c['diagnostics']:
+            hist=np.asarray(c['diagnostics']['training_history'])
+            if not np.isfinite(hist).all() or (np.diff(hist)>1e-10).any() or not np.isclose(hist[-1],c['training_objective'],rtol=1e-8,atol=1e-9):
+                raise ValueError('matching refit history fails strict descent')
+        training_pool.append({key:value for key,value in c.items() if key not in remove})
+    digest=hashlib.sha256(json.dumps(training_pool,sort_keys=True,allow_nan=False).encode()).hexdigest()
+    if digest!=result['candidate_pool_fit_only_sha256']:
+        raise ValueError('fit-only matching pool fingerprint mismatch')
+    for exchange in result['accepted_exchange_trace']:
+        c=pool[exchange['candidate_id']]
+        if not exchange['after']<exchange['before']-1e-8 or not np.isclose(exchange['after'],c['training_objective']):
+            raise ValueError('matching search continuation did not improve fit objective')
+    best=min((c for c in pool if c['validation_valid']),key=lambda c:(c['selection_score'],c['candidate_id']))
+    if best['candidate_id']!=result['candidate_id'] or best['active']!=result['active'] or not np.allclose(best['weights'],p,rtol=1e-9,atol=1e-10):
+        raise ValueError('matching holdout winner mismatch')
+    if not np.allclose([best['training_objective'],best['validation_objective'],best['selection_score']],
+                      [result['objective'],result['validation_objective'],result['selection_score']],rtol=1e-8,atol=1e-9):
+        raise ValueError('matching summary mismatch')
+    residual=result['fixed_support_first_order_residual']
+    if (not np.isfinite(residual) or residual<0 or residual!=best['fixed_support_first_order_residual'] or
+        result['solver_converged']!=(residual<=float(cfg.get('tol',1e-5)))):
+        raise ValueError('matching selected convergence diagnostic mismatch')
+    return True
+
+
 def audit(results, output, completed_only=False, draws=2000):
     results,output=Path(results),Path(output)
     validate_output(results,output);before=source_hashes(results)
@@ -85,7 +161,8 @@ def audit(results, output, completed_only=False, draws=2000):
     rows,paired,records=[],[],[];identities=set();completed=[]
     for name,folder in sorted(folders.items()):
         meta=read(folder/'run_metadata.json');cfg=meta['config']
-        if meta['experiment_version']!=EXPERIMENT_VERSION or cfg['uvarfs']['objective']!=LOCAL:
+        version=meta['experiment_version']
+        if version not in {EXPERIMENT_VERSION,'gpu-eval-v20-normal-local-selection'} or cfg['uvarfs']['objective'] not in {LOCAL,MATCHING} or (version=='gpu-eval-v20-normal-local-selection' and cfg['uvarfs']['objective']!=LOCAL):
             raise ValueError('mixed version or non-local results')
         if meta['config_fingerprint']!=config_fingerprint(cfg):
             raise ValueError('config fingerprint mismatch')
@@ -97,7 +174,7 @@ def audit(results, output, completed_only=False, draws=2000):
             raise ValueError('metrics present without complete evaluation')
         if sorted(frame.method)!=expected_method_names(cfg) or sorted(frame.method)!=sorted(meta['expected_methods']):
             raise ValueError('incomplete method set')
-        if not frame.experiment_version.eq(EXPERIMENT_VERSION).all() or not frame.dataset.eq(name).all():
+        if not frame.experiment_version.eq(version).all() or not frame.dataset.eq(name).all():
             raise ValueError('metric version/dataset mismatch')
         finite=['image_auroc','image_auprc']+(['pixel_auroc','pixel_auprc','aupro'] if name in {'brain','liver','resc'} else [])
         if not np.isfinite(frame[finite]).all().all() or not frame[finite].apply(lambda c:c.between(0,1)).all().all():
@@ -173,6 +250,13 @@ def audit(results, output, completed_only=False, draws=2000):
                         control=read(base/f'uvarfs_{method}.json')
                         if control[key]!=expected or control['layers']!=main['layers']:
                             raise ValueError('local causal control mismatch')
+            if branch['objective']==MATCHING:
+                for method,key in [('asls_no_variability','beta'),('asls_no_score','score_weight'),
+                                   ('asls_no_distribution','distribution_weight')]:
+                    if method+'_uvarfs' in cfg['methods']:
+                        control=read(base/f'uvarfs_{method}.json')
+                        if control[key]!=0. or control['layers']!=main['layers']:
+                            raise ValueError('matching causal control mismatch')
         predictions=pd.read_csv(folder/'image_predictions.csv');y=predictions.label.to_numpy()
         if len(y)!=progress['samples'] or predictions.image_path.duplicated().any() or set(np.unique(y))!={0,1}:
             raise ValueError('prediction coverage/labels mismatch')
@@ -186,7 +270,8 @@ def audit(results, output, completed_only=False, draws=2000):
             if not np.allclose([auc[0],ap[0]],[row.image_auroc,row.image_auprc],rtol=1e-10,atol=1e-10):
                 raise ValueError('image metrics do not match predictions')
         comparisons={m:[m] for m in ['asls_raw','asls_pca','asls_selected_raw','asls_no_variability_uvarfs',
-            'asls_no_rank_uvarfs','previous_main','fixed4_raw','all_raw'] if m in indexed.index}
+            'asls_no_rank_uvarfs','asls_no_score_uvarfs','asls_no_distribution_uvarfs',
+            'local_main','previous_main','fixed4_raw','all_raw'] if m in indexed.index}
         randoms=[f'asls_random_seed{s}' for s in cfg['random_baseline_seeds'] if f'asls_random_seed{s}' in indexed.index]
         if randoms:
             comparisons['asls_random_mean']=randoms
@@ -217,12 +302,12 @@ def audit(results, output, completed_only=False, draws=2000):
     df['method_family']=df.method.str.replace(r'_seed\d+$','',regex=True)
     metrics=['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']
     df.groupby(['dataset','method_family'])[metrics].agg(['mean','std','count']).to_csv(output/'family_mean_sd.csv')
-    data={'experiment_version':EXPERIMENT_VERSION,'completed_datasets':completed,
+    data={'experiment_version':version,'completed_datasets':completed,
           'all_six_complete':set(completed)==BMAD_DATASETS,'source_sha256':before,'diagnostics':records,
           'performance_proxy_is_not_detection_guarantee':True,'bootstrap_unit':'image; patient grouping unavailable'}
     (output/'analysis_data.json').write_text(json.dumps(data,ensure_ascii=False,indent=2),encoding='utf-8')
     (output/'analysis.md').write_text(
-        '# v20 normal-local result audit\n\n'
+        '# Normal sparse selection result audit\n\n'
         f'Completed datasets: {", ".join(completed)}. All six complete: {data["all_six_complete"]}.\n\n'
         'See verified_metrics.csv for all image/pixel metrics, family_mean_sd.csv for all random seeds, '
         'and paired_image_auroc.csv for paired differences and image bootstrap intervals. '

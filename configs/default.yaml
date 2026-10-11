@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v20-normal-local-selection
+results_dir: results/gpu-eval-v21-normal-matching-distribution
 
 representation:
   # One declared cosine geometry for layer fit, feature fit, memory and query.
@@ -45,8 +45,17 @@ asls:
   max_layers: 6
 
 uvarfs:
-  # v20 explicitly changes the proxy objective; full legacy controls remain.
-  objective: normal_local_fixed_budget
+  # Approved v21: actual normal 1-NN score + all-reference distribution + nuisance.
+  objective: normal_matching_distribution_fixed_budget
+  matching_temperature_rank: 8
+  matching_score_weight: 1.0
+  matching_distribution_weight: 1.0
+  matching_chunk: 256
+  matching_refit_max_iter: 150
+  matching_exchange_max_steps: 2
+  matching_exchange_candidates: 4
+  # Complete v20 local and original quadratic branches, on both input geometries.
+  control_objectives: [normal_local_fixed_budget]
   local_neighbor_rank: 8
   local_rank_weight: 1.0
   local_refit_max_iter: 150
@@ -95,6 +104,8 @@ methods:
   - main
   - asls_no_variability_uvarfs
   - asls_no_rank_uvarfs
+  - asls_no_score_uvarfs
+  - asls_no_distribution_uvarfs
   # Complete previous ASLS + fixed-budget cosine method under shared v20 data.
   - previous_main
   - last_raw

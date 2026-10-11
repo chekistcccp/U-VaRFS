@@ -86,7 +86,7 @@ class CPUIndex:
 
 
 def make_fixture(tmp_path,primary='none'):
-    cfg=load_config(Path(__file__).resolve().parents[1]/'configs'/'default.yaml')
+    cfg=load_config(Path(__file__).resolve().parents[1]/'configs'/'v20_control.yaml')
     cfg['methods']=[m for m in cfg['methods'] if m not in {'asls_exchange_refit_uvarfs','asls_selected_raw','asls_compression_uvarfs','asls_fixed_budget_uvarfs','previous_main','asls_no_variability_uvarfs','asls_no_rank_uvarfs'}]
     cfg['asls']['discrete_selection']='geometry_search'
     cfg['uvarfs']['sparsity_strategy']='objective_exchange_refit'  # Historical paired 74-method regression.

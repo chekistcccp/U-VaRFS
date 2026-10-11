@@ -10,7 +10,7 @@ import torch
 import torch.nn.functional as F
 
 from uvarfs.local_uvarfs import LocalObjective, fit_local_uvarfs, fit_local_asls, neighbor_pairs
-from uvarfs.objectives import LOCAL, QUADRATIC, experiment_branches
+from uvarfs.objectives import LOCAL, MATCHING, QUADRATIC, experiment_branches
 from uvarfs.pipeline_fit import collect_normal_inputs, fit_all_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, transform
 from uvarfs.protocol import expected_method_names, EXPERIMENT_VERSION
@@ -132,7 +132,7 @@ def test_shared_disjoint_collection_and_precise_asls_subset_scores(tmp_path):
 
 def test_complete_fit_memory_image_pixel_and_control_identities(tmp_path,monkeypatch):
     cfg,train,test=local_fixture(tmp_path);extractor=CountingExtractor();out=tmp_path/'fit'
-    cfg['methods']=load_config(Path(__file__).resolve().parents[1]/'configs/default.yaml')['methods']
+    cfg['methods']=load_config(Path(__file__).resolve().parents[1]/'configs/v20_control.yaml')['methods']
     monkeypatch.setattr(torch.cuda,'is_available',lambda:False)
     monkeypatch.setattr('uvarfs.pipeline_eval.make_index',lambda memory,cfg:CPUIndex(memory))
     specs=fit_all_method_specs(extractor,train,cfg,out)
@@ -160,9 +160,9 @@ def test_complete_fit_memory_image_pixel_and_control_identities(tmp_path,monkeyp
 
 def test_default_protocol_declares_real_method_change_and_original_feature_cap():
     cfg=load_config(Path(__file__).resolve().parents[1]/'configs/default.yaml')
-    assert cfg['uvarfs']['objective']==LOCAL and cfg['asls']['discrete_selection']=='normal_local'
+    assert cfg['uvarfs']['objective']==MATCHING and cfg['asls']['discrete_selection']=='normal_local'
     assert cfg['representation']['layer_normalization']=='l2' and cfg['uvarfs']['max_features']==256
-    assert len(expected_method_names(cfg))==172
+    assert len(expected_method_names(cfg))==262
     assert EXPERIMENT_VERSION in cfg['results_dir']
 
 
@@ -249,7 +249,7 @@ def test_invalid_holdout_and_zero_teacher_fail_explicitly(tmp_path):
 def test_independent_seed_summary_requires_distinct_main_fits(tmp_path,monkeypatch):
     import scripts.analyze_local_results as analyzer
     from uvarfs.protocol import BMAD_DATASETS
-    cfg=load_config(Path(__file__).resolve().parents[1]/'configs/default.yaml')
+    cfg=load_config(Path(__file__).resolve().parents[1]/'configs/v20_control.yaml')
     roots=[]
     for seed in [42,123]:
         root=tmp_path/f'run{seed}';roots.append(root)

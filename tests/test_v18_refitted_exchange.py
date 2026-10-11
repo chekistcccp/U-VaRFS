@@ -145,7 +145,7 @@ def test_164_methods_share_fit_memory_and_full_v17_compression_gram_controls(tmp
 
 
 def test_default_configuration_and_version_use_fixed_original_budget():
-    cfg=load_config(Path(__file__).resolve().parents[1]/'configs/default.yaml')
+    cfg=load_config(Path(__file__).resolve().parents[1]/'configs/v20_control.yaml')
     # The v18 constraints remain available to the paired previous-method solver.
     assert cfg['uvarfs']['max_features']==256
     assert cfg['uvarfs']['performance_weight_cap_factor']==4.

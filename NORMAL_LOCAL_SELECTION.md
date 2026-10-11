@@ -1,5 +1,7 @@
 # v20：以检测性能为目标的正常局部稀疏选择
 
+> v21保留本文件的ASLS与数据协议；本文件U-VaRFS目标作为完整`local_*`控制。当前Main见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)，已于2026-10-11获用户批准，不按测试成绩自动替换主方法。
+
 用户于 2026-10-10 授权依据研究复核建议修改方法和研究主线。本轮研究问题是：**仅使用正常参考数据，能否学习一种改善异常检测与定位表现的稀疏特征选择方法？** 压缩、低正常训练损失或工程加速均不能替代检测收益。性能尚待真实 BMAD 全六数据集验证。
 
 固定框架：BMAD 全六 → Frozen DINOv3 ViT-S+ 全层候选 → ASLS → U-VaRFS → normal memory → cosine 1-NN / Top-1% image score。异常标签、疾病标签和病灶 mask 只参与评价。正常邻居之间的排序约束是表征代理任务，不是异常类别监督。

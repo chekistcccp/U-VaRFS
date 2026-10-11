@@ -57,7 +57,7 @@ def test_invalid_caps_fail(cap):
 
 
 def numerical_cfg(**changes):
-    cfg=load_config(Path(__file__).resolve().parents[1]/'configs/default.yaml')['uvarfs']
+    cfg=load_config(Path(__file__).resolve().parents[1]/'configs/v20_control.yaml')['uvarfs']
     cfg.update(performance_exchange_strategy='pre_refit_descent',max_features=8,min_features=2,max_iter=100,cosine_refit_max_iter=100,
                cosine_polish_max_iter=80,cosine_exchange_max_steps=1,cosine_exchange_candidates=3,
                cosine_geometry_chunk=7,log_every=10000,geometry_tolerance=.2)

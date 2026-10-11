@@ -12,7 +12,7 @@ from uvarfs.dinov3 import DINOv3Extractor
 from uvarfs.pipeline_fit import fit_all_method_specs
 from uvarfs.pipeline_eval import build_memories, evaluate, write_summaries
 from uvarfs.representation import normalization_modes, normalization_prefix
-from uvarfs.objectives import experiment_branches, COSINE, PERFORMANCE, LOCAL
+from uvarfs.objectives import experiment_branches, COSINE, PERFORMANCE, LOCAL, MATCHING, methods_for_objective
 
 from uvarfs.selection_diagnostics import cosine_feasibility_diagnostics
 from uvarfs.protocol import (EXPERIMENT_VERSION,BMAD_DATASETS,config_fingerprint,
@@ -54,6 +54,7 @@ def main():
     ap.add_argument('--force',action='store_true',help='rerun datasets even if results/<dataset>/metrics.csv already exists')
     ap.add_argument('--check-data-only',action='store_true',help='validate normal train, all requested datasets and test masks without loading DINOv3')
     ap.add_argument('--seed',type=int,help='independent fit/memory seed; writes an isolated seed directory')
+    ap.add_argument('--dataset-worker',action='store_true',help='write only one dataset; coordinator publishes global summaries after all six finish')
     args=ap.parse_args()
 
     cfg=load_config(args.config)
@@ -74,6 +75,8 @@ def main():
     wanted=BMAD_DATASETS if args.dataset=='all' else {x.strip().lower() for x in args.dataset.split(',') if x.strip()}
     if not wanted:
         ap.error('--dataset must contain at least one dataset name')
+    if args.dataset_worker and len(wanted)!=1:
+        ap.error('--dataset-worker requires exactly one dataset')
     missing=wanted-set(roots)
     if missing:
         raise SystemExit(f'Missing requested BMAD datasets: {sorted(missing)}. The all-six protocol must not silently skip datasets.')
@@ -139,10 +142,10 @@ def main():
             if cfg['asls'].get('discrete_selection')=='normal_local':
                 compatible=compatible and all((out/branch['folder']/'asls_previous.json').is_file()
                     for branch in experiment_branches(cfg))
-            for name in ['asls_no_variability','asls_no_rank']:
-                if name+'_uvarfs' in cfg['methods']:
-                    compatible=compatible and all((out/branch['folder']/f'uvarfs_{name}.json').is_file()
-                        for branch in experiment_branches(cfg) if branch['objective']==LOCAL)
+            for branch in experiment_branches(cfg):
+                for name in ['asls_no_variability','asls_no_rank','asls_no_score','asls_no_distribution']:
+                    if name+'_uvarfs' in methods_for_objective(cfg,branch['objective']):
+                        compatible=compatible and (out/branch['folder']/f'uvarfs_{name}.json').is_file()
             if 'previous_main' in cfg['methods']:
                 compatible=compatible and all((out/branch['folder']/'uvarfs_previous_main.json').is_file()
                     for branch in experiment_branches(cfg))
@@ -150,7 +153,8 @@ def main():
                 print(f'[resume] {dname}: found complete {metrics_path}; skipping dataset ({len(existing)} method rows)',flush=True)
                 all_rows.extend(existing.to_dict('records'))
                 _append_layer_rows(layer_rows,out,dname,extractor.num_layers,cfg)
-                _save_partial(all_rows,layer_rows,res)
+                if not args.dataset_worker:
+                    _save_partial(all_rows,layer_rows,res)
                 continue
 
         save_json({'experiment_version':EXPERIMENT_VERSION,'config':cfg,
@@ -233,6 +237,18 @@ def main():
                 obj=spec['obj']
                 r.update(uvarfs_objective_definition=obj.get('objective_definition','quadratic_gram'),
                          uvarfs_geometry_metric=obj.get('geometry_metric','unrenormalized_weighted_gram_relative_frobenius'))
+                if obj.get('objective_definition')==MATCHING:
+                    for key in ['geometry_error','solver_converged','objective','validation_objective',
+                        'selection_score','selection_policy','candidate_id','objective_certificate_scope',
+                        'fixed_support_first_order_residual','effective_weight_dimension',
+                        'normal_match_score_relative_mse','normal_neighbor_distribution_kl_relative',
+                        'variability_term','weight_cap_factor','fit_seconds','fixed_feature_budget',
+                        'maximum_relative_weight','simplex_residual','beta','score_weight',
+                        'distribution_weight','temperature_fit_only','support_generation_uses_holdout',
+                        'candidate_pool_fit_only_sha256','objective_dtype','reference_policy']:
+                        r['uvarfs_'+key]=obj[key]
+                    r['uvarfs_geometry_feasible']=None
+                    continue
                 if obj.get('objective_definition')==LOCAL:
                     r.update(uvarfs_geometry_error=obj['geometry_error'],uvarfs_geometry_feasible=None,
                         uvarfs_solver_converged=obj['solver_converged'],uvarfs_objective=obj['objective'],
@@ -301,7 +317,8 @@ def main():
         pd.DataFrame(rows).to_csv(metrics_path,index=False)
         all_rows.extend(rows)
         _append_layer_rows(layer_rows,out,dname,extractor.num_layers,cfg)
-        _save_partial(all_rows,layer_rows,res)
+        if not args.dataset_worker:
+            _save_partial(all_rows,layer_rows,res)
         print(f'[{dname}] checkpoint saved: {metrics_path}',flush=True)
 
         # Release per-dataset GPU/CPU state before the next dataset.
@@ -309,6 +326,9 @@ def main():
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    if args.dataset_worker:
+        print('Dataset worker complete; global summaries are deferred to strict all-six merge.',flush=True)
+        return
     df=pd.DataFrame(all_rows)
     df.to_csv(res/'all_metrics.csv',index=False)
     write_summaries(df,res)

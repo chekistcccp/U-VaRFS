@@ -1,4 +1,4 @@
-> **当前 v20：正常局部稀疏选择**。研究核心是开发改善检测与定位性能的稀疏特征选择方法。Main 预设逐层 L2，以正常局部匹配、近邻排序和实际扰动稳定性选层/选维，保留原256维上限；旧目标、raw、PCA与五seed随机控制完整保留。精确设计、变更授权与证据边界见 [NORMAL_LOCAL_SELECTION.md](NORMAL_LOCAL_SELECTION.md)。
+> **当前 v21：正常匹配分数与完整邻居分布稀疏保持**。研究核心是开发改善检测与定位性能的稀疏特征选择。ASLS和逐层L2沿用v20；U-VaRFS保持原256维预算，以实际正常1-NN分数、完整reference分布和nuisance稳定性拟合。v20和全部旧目标、raw、PCA与五seed随机控制保留。已获用户批准，精确设计见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)；真实性能尚待全六三独立种子验证。
 
 > **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告仅留本地。
 
@@ -190,21 +190,18 @@ F^{(l)} \in \mathbb{R}^{P\times384}
 
 正常全局 Gram 保持不能保证未知异常分离。新方法尝试让稀疏特征保持检测器依赖的局部近邻关系，并抑制实际 nuisance 敏感性；这是待检验的代理假设，不称为异常标签判别学习。
 
-用全部候选输入建立 dense teacher，每个query的跨图最近正常reference和第8个正常邻居构成两类局部边。难匹配正常query权重有界至4，避免全局平均过度偏重容易正常patch。
+在ASLS选中层dense输入上建立全部跨图正常reference teacher。学生每次重算自己的最近reference；同时保持正常1-NN分数与完整邻居概率，避免只约束teacher固定边。温度只取拟合集dense最近至第8邻居差距的中位数，最低.01，不由留出或测试选择。
 
 ```text
-min_support,p L_local_cosine + L_normal_neighbor_rank + beta L_actual_nuisance_cosine
+min_support,p L_actual_normal_1NN_score + L_full_reference_distribution_KL + .002 L_actual_nuisance_cosine
 K = min(256, candidate dimension), sum(p)=1
 1e-4/K <= p_j <= min(1,4/K) on support; others zero
-beta=.002, rank weight=1
 Y = X diag(sqrt(p))
 ```
 
-三个正常数据支持起点保留 uniform 和 projected-gradient refit；有限交换只用拟合集。候选由正常留出 local/rank 加拟合 variability 分数选出，不扫 Main lambda，不挑更小维数。解析梯度只计算局部边；仅报告固定支持 capped simplex 一阶残差，不声称全局最优或异常性能保证。
+三个正常拟合起点保留uniform与固定支持重拟合；两轮、每轮四个支持提案只使用拟合集，严格按拟合目标接受继续搜索。完整fit候选池先生成并哈希，再用正常留出matching损失加拟合nuisance选择有限池。保持固定256预算，不优先压缩。float64分块解析梯度保持全部reference分布；只记录固定支持当前最近分支的投影残差，不宣称全局最优或检测保证。
 
-新局部误差与全局 Gram 分开记录，旧0.05 global tolerance只作用于旧控制。原 quadratic/P、旧cosine/cardinality、完整旧fixed-budget目标都保留；它们与新目标不属于等价数值优化。`previous_main`保留旧ASLS+旧fixed-budget solver，但同轮共享v20数据划分，不能当历史版本数值复现。
-
-`asls_no_variability_uvarfs`去除特征阶段所有nuisance使用，`asls_no_rank_uvarfs`去掉排序项；同支持uniform、Raw、同维PCA、五seedRandom保留。通过这些AD对照判断支持、权重与variability是否有效，不能只比较正常训练目标。公式、选择尺度、零行规则、预算与变更检查见 [NORMAL_LOCAL_SELECTION.md](NORMAL_LOCAL_SELECTION.md)。
+`asls_no_variability_uvarfs`删除全部特征阶段nuisance使用；`asls_no_score_uvarfs`与`asls_no_distribution_uvarfs`检验两新项。同支持uniform、相同输入Raw/PCA/五Random以及完整v20 `local_*`与original `gram_*`、所有历史目标控制保留。默认262方法/数据集。公式、尺度、候选、证据边界与并行审计见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)。
 
 ---
 
@@ -657,14 +654,16 @@ bash run.sh
 - detector 保持简单，避免性能提升来自复杂下游网络；
 - 所有主要创新通过统一 BMAD protocol 和严格 ablation 验证。
 
-当前版本为 `gpu-eval-v20-normal-local-selection`，默认172方法、全六1032行。先固定设计验证Liver运行，再统一全六；不要据Liver test更改其余数据集Main。独立重复和只读审计：
+当前版本为 `gpu-eval-v21-normal-matching-distribution`，默认262方法、全六1572行/独立种子。先固定设计验证Liver运行，再统一全六；不要据Liver test更改其余数据集Main。独立重复和只读审计：
 
 ```bash
 SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
 SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
 python -m scripts.run_all --seed 123
 python -m scripts.run_all --seed 3407
-python -m scripts.analyze_local_results --results results/gpu-eval-v20-normal-local-selection --out reports/v20
+python -m scripts.analyze_local_results --results results/gpu-eval-v21-normal-matching-distribution --out OUTSIDE_REPO
 ```
 
 独立seed汇总使用分析器`--seed-results`，要求每个seed全六完整且设计/代码一致；部分回传使用`--completed-only`，不称为全六宏平均。本地实现检查通过不能代替真实检测实验。
+
+四卡按独立种子/数据集调度，每个`--dataset-worker`只写自己的数据集目录；全六严格完成后唯一协调者使用`python -m scripts.merge_dataset_workers --seed SEED`发布汇总。控制与日志在仓库外，禁止并发任务覆盖global CSV。运行预算以实测更新，启动身份核验后在预计窗口检查，不频繁轮询。

@@ -1,5 +1,7 @@
 # U-VaRFS Project Agent Guide
 
+> **当前Main以第46节和[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)为准。** 用户于2026-10-11批准真实正常1-NN分数保持、完整正常邻居分布与nuisance稳定性的新U-VaRFS目标、代码同步和独立全六三种子验证，同时允许物理GPU0–3并行。第45节ASLS/数据协议继续保持，v20 U-VaRFS完整保留为`local_*`控制。性能仍须真实实验验证；不以正常loss、压缩或工程提速声明成功。连接、控制、结果、日志、分析均在仓库外。
+
 > **用途：Codex 项目迁移与长期开发约束。**
 >
 > 本文件是本仓库的**最高优先级研究主线说明与工程交接文件**。后续 Codex 在修复错误、优化性能、增加实验、重构代码或解释结果之前，应先读取本文件。
@@ -1516,3 +1518,21 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 本轮完整本地回归222项通过、10项CUDA检查因缺runtime跳过；独立autograd/有限差分、跨图近邻排除、留出不影响拟合候选、β=0去除全部特征阶段nuisance、172方法共享fit/memory/image/pixel、控制/版本/断点/审计与独立seed汇总检查通过。旧backbone/detector/metrics及相关数学模块逐文件保持，v17 reference函数AST保持；Python与shell语法及diff检查通过。这些是实现证据，不是BMAD正向性能证据。
 
 2026-10-11 分析器兼容修复：四类旧 quadratic 子控制（top-weight、prune/refit、exchange/refit、legacy）可缺少显式 `objective_definition`，按其既有文件身份继续核验原 lambda path；其他文件仍要求有效目标身份，缺失 Main/local 身份或将旧控制标为其他目标均拒绝。仅修改只读分析器与回归覆盖，不改训练源码、配置、结果或实验版本；固定重复仍使用已锁定的实验源码。第19节检查的研究定义、ASLS/U-VaRFS、标签约束、detector、预算与结果可比性均不改变。回传数据与分析继续按第28节保存在仓库之外。
+
+
+---
+
+# 46. 2026-10-11 v21 正常匹配分数与完整邻居分布（当前Main）
+
+用户批准具体新目标、代码同步与独立验证，并要求同时使用物理GPU0–3。精确设计以[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)为准；版本`gpu-eval-v21-normal-matching-distribution`、新目录/指纹。第45节ASLS、normal划分、逐层L2/raw、backbone、detector和原预算保持；第45节U-VaRFS目标变为完整`local_*`控制。研究问题仍是改善检测和定位的无异常标签稀疏特征选择。
+
+- 新U-VaRFS `normal_matching_distribution_fixed_budget`：真实student正常1-NN分数保持 + 全部允许normal reference概率分布KL + .002实际nuisance cosine。teacher与student均排除同图reference，student最近邻每次重新计算。temperature仅由fit dense最近至rank8差距中位数确定，最低.01；不能由holdout/test选择。
+- K=min(256,M)、sum(p)=1、floor=1e-4/K、cap=min(1,4/K)保持。不扫Main lambda，不以更小维数或低正常目标补偿检测下降。
+- 全部支持生成、固定支持150步refit与两轮/每轮四个交换提案只访问fit。三起点保留uniform与refit；完整训练池先哈希，再创建holdout validator，按holdout matching损失+training nuisance选择有限池。β0在所有特征阶段忽略扰动，包括起点。仅报告当前最近分支的fixed-support projected residual，不宣称非凸/离散全局最优或检测保证。
+- 原172个v20/Gram控制全部保留；v20主分支改名`local_*`（raw为`raw_input_local_*`），Gram名称不变。新Main及其层控制、β0/无score/无distribution、同K PCA/五Random、同支持uniform增加90个结果，共262方法/数据集、1572行/全六/独立fit seed。`configs/v20_control.yaml`锁定历史配置用于回归，不混入新目录。
+- 独立fit/memory seeds42/123/3407；不能把五Random seeds当Main重复。先Liver工程验证，再冻结配置/代码跑全六独立验证，不根据Liver test改后续设计。汇总相同输入Raw/PCA/Random/β0与v20/定位对照，mean/样本SD、全部代价和局限。历史test已多次用于开发，不声称未接触的最终测试。
+- 四卡以dataset worker调度。`--dataset-worker`只允许一个数据集并仅写其目录；相同fit seed配置/results_dir一致；六集完整且版本/代码/config/方法/指标通过后，唯一协调者用`scripts.merge_dataset_workers`发布global CSV。连接、GPU锁、控制、stdout、exit、回传和分析仍仓库外，保留nohup.sh、服务器未提交文件、原数据/结果，不安装依赖。
+- 估计依据旧完整实测和新增262方法成本，Liver实测后更新四卡时间；启动身份核验一次，随后预计完成窗口/数小时间隔检查，不频繁检查正常进度。仅完成/故障/用户操作/重要结论通知。
+- 第19节检查：研究问题不变；ASLS不变；U-VaRFS目标/支持算法变更已获明确授权；无异常labels/masks拟合；detector与统一预算不变；版本/可比性明确变更，旧结果保留，代码检查后提交推送。真实性能尚未证明，持续研究目标不能因正常代理或实现通过标为完成。
+
+本地完整回归236项通过、10项CUDA检查因本机无runtime跳过；独立autograd与inactive-coordinate有限差分、分块完整reference、真实student近邻、dense恒等、fit-only完整池与beta0扰动独立、262方法fit/memory/image/pixel及因果控制、严格resume、四卡worker不写global汇总、六集完整/混合代码和种子拒绝检查通过。Python语法和diff检查通过。新目标的真实BMAD检测收益仍需服务器独立全六验证，不能以这些实现检查声明成功。
