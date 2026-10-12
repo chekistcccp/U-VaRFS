@@ -152,19 +152,22 @@ def test_default_approved_protocol_preserves_all_v20_controls_and_budget():
         assert renamed in expected
 
 
-def test_full_fit_inference_memory_pixel_controls_and_runner_worker(tmp_path,monkeypatch):
+@pytest.mark.parametrize('dataset',['liver','xray'])
+def test_full_fit_inference_memory_pixel_controls_and_runner_worker(tmp_path,monkeypatch,dataset):
     import scripts.run_all as runner
     import scripts.analyze_local_results as analyzer
     cfg,train,test=matching_fixture(tmp_path,True)
+    if dataset=='xray':
+        (tmp_path/'liver'/'test'/'Ungood'/'anomaly_mask'/'image.png').unlink()
     cfg['paths']['processed_data']=str(tmp_path);cfg['results_dir']=str(tmp_path/'output')
     extractor=CountingExtractor()
     monkeypatch.setattr(torch.cuda,'is_available',lambda:False)
     monkeypatch.setattr(runner,'load_config',lambda _:copy.deepcopy(cfg))
     monkeypatch.setattr(runner,'DINOv3Extractor',lambda *args:extractor)
-    monkeypatch.setattr(runner,'discover_bmad_roots',lambda _: {'liver':tmp_path/'liver'})
+    monkeypatch.setattr(runner,'discover_bmad_roots',lambda _: {dataset:tmp_path/'liver'})
     monkeypatch.setattr('uvarfs.pipeline_eval.make_index',lambda memory,cfg:CPUIndex(memory))
-    monkeypatch.setattr(sys,'argv',['run_all','--dataset','liver','--dataset-worker'])
-    runner.main();root=tmp_path/'output';folder=root/'liver'
+    monkeypatch.setattr(sys,'argv',['run_all','--dataset',dataset,'--dataset-worker'])
+    runner.main();root=tmp_path/'output';folder=root/dataset
     assert not (root/'all_metrics.csv').exists() and not (root/'summary_metrics.csv').exists()
     frame=pd.read_csv(folder/'metrics.csv');assert len(frame)==262
     main=frame.set_index('method').loc['main']
@@ -173,7 +176,11 @@ def test_full_fit_inference_memory_pixel_controls_and_runner_worker(tmp_path,mon
     before=len(extractor.outputs);runner.main();assert len(extractor.outputs)==before
     monkeypatch.setattr(analyzer,'verify_recorded_code',lambda _:False)
     audit=analyzer.audit(root,tmp_path/'audit',True,50)
-    assert audit['completed_datasets']==['liver']
+    assert audit['completed_datasets']==[dataset] and not audit['all_six_complete']
+    family=pd.read_csv(tmp_path/'audit'/'family_mean_sd.csv',header=[0,1],index_col=[0,1])
+    reported=set(family.columns.get_level_values(0))
+    assert {'image_auroc','image_auprc'}<=reported
+    assert ('pixel_auroc' in reported)==(dataset=='liver')
     (folder/'uvarfs_asls_no_distribution.json').unlink()
     runner.main();assert len(extractor.outputs)>before  # Incomplete causal result cannot resume.
 

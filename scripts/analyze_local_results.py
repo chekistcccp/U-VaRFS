@@ -300,7 +300,10 @@ def audit(results, output, completed_only=False, draws=2000):
     df.to_csv(output/'verified_metrics.csv',index=False)
     pd.DataFrame(paired).to_csv(output/'paired_image_auroc.csv',index=False)
     df['method_family']=df.method.str.replace(r'_seed\d+$','',regex=True)
-    metrics=['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']
+    # Completed-only returns can contain only datasets without pixel masks.
+    # Keep their reports image-only; masked datasets are checked above.
+    metrics=[name for name in ['image_auroc','image_auprc','pixel_auroc','pixel_auprc','aupro']
+             if name in df.columns]
     df.groupby(['dataset','method_family'])[metrics].agg(['mean','std','count']).to_csv(output/'family_mean_sd.csv')
     data={'experiment_version':version,'completed_datasets':completed,
           'all_six_complete':set(completed)==BMAD_DATASETS,'source_sha256':before,'diagnostics':records,
