@@ -1,6 +1,6 @@
 # U-VaRFS Project Agent Guide
 
-> **当前Main以第46节和[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)为准。** 用户于2026-10-11批准真实正常1-NN分数保持、完整正常邻居分布与nuisance稳定性的新U-VaRFS目标、代码同步和独立全六三种子验证，同时允许物理GPU0–3并行。第45节ASLS/数据协议继续保持，v20 U-VaRFS完整保留为`local_*`控制。性能仍须真实实验验证；不以正常loss、压缩或工程提速声明成功。连接、控制、结果、日志、分析均在仓库外。
+> **当前Main以第46节和[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)为准。** 用户于2026-10-11批准真实正常1-NN分数保持、完整正常邻居分布与nuisance稳定性的新U-VaRFS目标、代码同步和独立全六三种子验证，同时允许物理GPU0–3并行。第45节ASLS/数据协议继续保持，v20 U-VaRFS完整保留为`local_*`控制。性能仍须真实实验验证；不以正常loss、压缩或工程提速声明成功。**2026-10-12最新存储要求见第47节：实验产物保存在服务器及本机当前项目文件夹内，Git忽略；SSH密钥、连接设置与调度控制单独保存。**
 
 > **用途：Codex 项目迁移与长期开发约束。**
 >
@@ -1241,13 +1241,13 @@ SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
 
 ---
 
-# 28. 仓库同步默认设置（用户于 2026-10-06 更新）
+# 28. 仓库同步默认设置（用户于 2026-10-06 更新，2026-10-12 明确存储位置）
 
-用户最新要求：**实验结果默认只保留本地，不同步到仓库；代码改进继续按原授权提交与推送。** 本条取代此前默认同步实验摘要、结果分析与图表的约定。
+用户最新要求：**实验结果必须保存在服务器及本机当前项目文件夹，但默认不提交或推送到Git；代码改进继续按原授权提交与推送。** 文件位于项目目录与上传Git是两项独立要求。本条取代此前默认同步实验摘要、结果分析与图表及将全部实验产物放在项目外的约定。
 
 - 每轮改进完成且必要检查通过后，将相关代码、配置、测试和开发/运行交接文档提交到 Git，并推送到配置的远程仓库；沿用当前工作分支，除非用户另有指定。
 - 该授权持续有效，后续完成改进时直接执行提交与推送，无需再次确认。
-- 实验 CSV/JSON、逐图预测、checkpoint、heatmap、日志、结果摘要与分析报告默认不提交、不推送；结果与分析仍可生成在本地 `results/`、`reports/`、`logs/`，这些目录及 `*.log` 由 `.gitignore` 排除。除非用户以后明确要求上传特定结果，否则不得强制加入 Git。
+- 实验 CSV/JSON、逐图预测、checkpoint、heatmap、日志、结果摘要与分析报告保存在服务器和本机当前项目的 `results/`、`reports/`、`logs/`；默认不提交、不推送，这些目录及 `*.log` 由 `.gitignore` 排除。除非用户以后明确要求上传特定结果，否则不得强制加入 Git。
 - 已经上传的历史结果保持原样；新增忽略规则不会取消它们的跟踪。后续重算报告另存本地新目录，不默认覆盖、暂存或推送已跟踪的历史实验产物。删除远程历史结果或清理 Git 历史需要用户另行明确要求。
 - 提交只包含本轮代码改进相关文件，明确列出暂存路径；不通过全量暂存把实验产物带入提交。已有用户文件按其原有用途保留。同步前核对远程分支状态，使用正常提交和推送流程。
 - 完成后告知提交号与同步状态；网络、认证或分支保护导致推送失败时保留本地提交，明确报告尚未同步成功。
@@ -1517,7 +1517,7 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 
 本轮完整本地回归222项通过、10项CUDA检查因缺runtime跳过；独立autograd/有限差分、跨图近邻排除、留出不影响拟合候选、β=0去除全部特征阶段nuisance、172方法共享fit/memory/image/pixel、控制/版本/断点/审计与独立seed汇总检查通过。旧backbone/detector/metrics及相关数学模块逐文件保持，v17 reference函数AST保持；Python与shell语法及diff检查通过。这些是实现证据，不是BMAD正向性能证据。
 
-2026-10-11 分析器兼容修复：四类旧 quadratic 子控制（top-weight、prune/refit、exchange/refit、legacy）可缺少显式 `objective_definition`，按其既有文件身份继续核验原 lambda path；其他文件仍要求有效目标身份，缺失 Main/local 身份或将旧控制标为其他目标均拒绝。仅修改只读分析器与回归覆盖，不改训练源码、配置、结果或实验版本；固定重复仍使用已锁定的实验源码。第19节检查的研究定义、ASLS/U-VaRFS、标签约束、detector、预算与结果可比性均不改变。回传数据与分析继续按第28节保存在仓库之外。
+2026-10-11 分析器兼容修复：四类旧 quadratic 子控制（top-weight、prune/refit、exchange/refit、legacy）可缺少显式 `objective_definition`，按其既有文件身份继续核验原 lambda path；其他文件仍要求有效目标身份，缺失 Main/local 身份或将旧控制标为其他目标均拒绝。仅修改只读分析器与回归覆盖，不改训练源码、配置、结果或实验版本；固定重复仍使用已锁定的实验源码。第19节检查的研究定义、ASLS/U-VaRFS、标签约束、detector、预算与结果可比性均不改变。回传数据与分析按第28/47节保存在项目内的Git忽略目录。
 
 
 ---
@@ -1531,8 +1531,20 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 全部支持生成、固定支持150步refit与两轮/每轮四个交换提案只访问fit。三起点保留uniform与refit；完整训练池先哈希，再创建holdout validator，按holdout matching损失+training nuisance选择有限池。β0在所有特征阶段忽略扰动，包括起点。仅报告当前最近分支的fixed-support projected residual，不宣称非凸/离散全局最优或检测保证。
 - 原172个v20/Gram控制全部保留；v20主分支改名`local_*`（raw为`raw_input_local_*`），Gram名称不变。新Main及其层控制、β0/无score/无distribution、同K PCA/五Random、同支持uniform增加90个结果，共262方法/数据集、1572行/全六/独立fit seed。`configs/v20_control.yaml`锁定历史配置用于回归，不混入新目录。
 - 独立fit/memory seeds42/123/3407；不能把五Random seeds当Main重复。先Liver工程验证，再冻结配置/代码跑全六独立验证，不根据Liver test改后续设计。汇总相同输入Raw/PCA/Random/β0与v20/定位对照，mean/样本SD、全部代价和局限。历史test已多次用于开发，不声称未接触的最终测试。
-- 四卡以dataset worker调度。`--dataset-worker`只允许一个数据集并仅写其目录；相同fit seed配置/results_dir一致；六集完整且版本/代码/config/方法/指标通过后，唯一协调者用`scripts.merge_dataset_workers`发布global CSV。连接、GPU锁、控制、stdout、exit、回传和分析仍仓库外，保留nohup.sh、服务器未提交文件、原数据/结果，不安装依赖。
+- 四卡以dataset worker调度。`--dataset-worker`只允许一个数据集并仅写其目录；相同fit seed配置/results_dir一致；六集完整且版本/代码/config/方法/指标通过后，唯一协调者用`scripts.merge_dataset_workers`发布global CSV。连接设置、密钥和GPU锁/调度控制单独保存；stdout、exit、回传和分析按第47节保存在项目内的Git忽略目录。保留nohup.sh、服务器未提交文件、原数据/结果，不安装依赖。
 - 估计依据旧完整实测和新增262方法成本，Liver实测后更新四卡时间；启动身份核验一次，随后预计完成窗口/数小时间隔检查，不频繁检查正常进度。仅完成/故障/用户操作/重要结论通知。
 - 第19节检查：研究问题不变；ASLS不变；U-VaRFS目标/支持算法变更已获明确授权；无异常labels/masks拟合；detector与统一预算不变；版本/可比性明确变更，旧结果保留，代码检查后提交推送。真实性能尚未证明，持续研究目标不能因正常代理或实现通过标为完成。
 
 本地完整回归236项通过、10项CUDA检查因本机无runtime跳过；独立autograd与inactive-coordinate有限差分、分块完整reference、真实student近邻、dense恒等、fit-only完整池与beta0扰动独立、262方法fit/memory/image/pixel及因果控制、严格resume、四卡worker不写global汇总、六集完整/混合代码和种子拒绝检查通过。Python语法和diff检查通过。新目标的真实BMAD检测收益仍需服务器独立全六验证，不能以这些实现检查声明成功。
+
+---
+
+# 47. 2026-10-12 实验产物保存在当前项目文件夹
+
+用户明确要求结果出现在服务器上，也保存在当前项目文件夹；已放在其他位置的实验文件须整理回来。本节覆盖此前关于实验结果、回传、分析、日志必须放在项目外的存储约定；研究设计及第28节不上传实验产物的约定保持。
+
+- 服务器与本机分别以各自当前项目为根，结果/回传归入 `results/`，报告/诊断归入 `reports/`，运行与核验日志归入 `logs/`；全部由Git忽略。新实验输出配置直接指向项目内的独立版本/种子目录。
+- SSH密钥、密码、连接设置及必要调度控制保留在专用连接目录，不复制或提交到实验项目；实验结果不再以该目录作为实际存储位置。
+- 已结束产物先核验原始文件及副本SHA，再迁移；旧路径可保留指向项目内实际文件的兼容链接，避免破坏历史来源记录。不得重写原始指标、manifest、记录的配置路径或指纹来伪装重跑。
+- 对当前活动批次只复制已严格完成且原worker退出的数据集；原活动目录和配置不动。原wrapper、coordinator与全部worker安全退出，且完整成功/审计证明具备后，才能校验并迁移整个批次、清理已核验旧物理副本。后续自动跟进须落实这一步，不能只更新说明文件。
+- 修改存储说明及仓库外收回/监控助手不改变数学目标、ASLS、标签约束、detector或数据预算，不升级实验版本；运行期间仍不pull服务器或改动冻结源码/config/executor。按原授权同步开发文档，结果与迁移报告不进入Git。

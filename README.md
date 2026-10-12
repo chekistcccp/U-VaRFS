@@ -1,6 +1,6 @@
 > **当前 v21：正常匹配分数与完整邻居分布稀疏保持**。研究核心是开发改善检测与定位性能的稀疏特征选择。ASLS和逐层L2沿用v20；U-VaRFS保持原256维预算，以实际正常1-NN分数、完整reference分布和nuisance稳定性拟合。v20和全部旧目标、raw、PCA与五seed随机控制保留。已获用户批准，精确设计见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)；真实性能尚待全六三独立种子验证。
 
-> **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告仅留本地。
+> **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告保存在服务器及本机当前项目的`results/`、`reports/`、`logs/`中，由Git忽略，不默认提交或推送。
 
 旧设计说明作为历史控制保留：[quadratic 与支持求解](OBJECTIVE_SPARSITY_UPGRADE.md)、[cosine/cardinality](COSINE_UVARFS_UPGRADE.md)、[fixed-budget cosine](PERFORMANCE_FIRST.md)、[v18支持交换](REFITTED_SUPPORT_EXCHANGE.md)、[v19工程缓存](EXACT_COSINE_CACHE.md)。当前主输入与目标明确变更，不按历史 test 自动挑选输入或超参。
 
@@ -666,4 +666,4 @@ python -m scripts.analyze_local_results --results results/gpu-eval-v21-normal-ma
 
 独立seed汇总使用分析器`--seed-results`，要求每个seed全六完整且设计/代码一致；部分回传使用`--completed-only`，不称为全六宏平均。本地实现检查通过不能代替真实检测实验。
 
-四卡按独立种子/数据集调度，每个`--dataset-worker`只写自己的数据集目录；全六严格完成后唯一协调者使用`python -m scripts.merge_dataset_workers --seed SEED`发布汇总。控制与日志在仓库外，禁止并发任务覆盖global CSV。运行预算以实测更新，启动身份核验后在预计窗口检查，不频繁轮询。
+四卡按独立种子/数据集调度，每个`--dataset-worker`只写自己的数据集目录；全六严格完成后唯一协调者使用`python -m scripts.merge_dataset_workers --seed SEED`发布汇总。SSH连接与调度控制单独保存，实验产物按AGENTS第47节归入项目内的Git忽略目录，禁止并发任务覆盖global CSV。运行预算以实测更新，启动身份核验后在预计窗口检查，不频繁轮询。
