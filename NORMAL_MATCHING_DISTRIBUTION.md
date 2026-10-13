@@ -55,6 +55,7 @@ max在最近reference切换/并列处非光滑，只报告固定支持当前最�
 python -m scripts.run_all --seed 42 --dataset liver --dataset-worker
 python -m scripts.merge_dataset_workers --seed 42
 python -m scripts.analyze_local_results --seed-results SEED42_DIR SEED123_DIR SEED3407_DIR --out reports/v21-independent-seeds
+python -m scripts.report_independent_fit_results --audit-dir reports/v21-independent-seeds --seed-results SEED42_DIR SEED123_DIR SEED3407_DIR --out reports/v21-performance --bootstrap 2000
 ```
 
 SSH密钥、连接设置与必要调度控制单独保存；按2026-10-12用户最新要求，结果/回传、分析与stdout/exit分别保存在服务器及本机当前项目的`results/`、`reports/`、`logs/`，由Git忽略。已完成产物校验后迁回，活动批次保持冻结路径，安全退出后再迁移完整目录，见AGENTS第47节。只允许物理0–3并先核对占用。保留用户nohup.sh、未提交文件和原始数据。单Liver工程验证后按数据集分配18个任务，完成的同版本Liver允许严格resume。估计以完整旧实验实测及新增成本为基准，Liver实测后更新；启动身份核验一次，随后到预计完成窗口检查，不频繁轮询。工程失败定位具体阶段，等价修复可以继续；研究目标变更需新的具体提案。
