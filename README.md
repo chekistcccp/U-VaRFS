@@ -2,6 +2,8 @@
 
 > **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告保存在服务器及本机当前项目的`results/`、`reports/`、`logs/`中，由Git忽略，不默认提交或推送。
 
+> **实验文件存储限制：[EXPERIMENT_STORAGE.md](EXPERIMENT_STORAGE.md)**。全部实验产物必须实际位于两端当前项目；完成后主动完整回传并逐文件SHA校验，禁止项目外输出或仅收回最终CSV。SSH密钥与连接设置单独保存。
+
 旧设计说明作为历史控制保留：[quadratic 与支持求解](OBJECTIVE_SPARSITY_UPGRADE.md)、[cosine/cardinality](COSINE_UVARFS_UPGRADE.md)、[fixed-budget cosine](PERFORMANCE_FIRST.md)、[v18支持交换](REFITTED_SUPPORT_EXCHANGE.md)、[v19工程缓存](EXACT_COSINE_CACHE.md)。当前主输入与目标明确变更，不按历史 test 自动挑选输入或超参。
 
 > **已兼容 BMAD 官方 6 个整理后的 AD 压缩包**：包括 `Liver_AD.zip` 的 `Liver/Train/hist_DIY` 特殊 img/label 目录，以及 Chest/OCT2017/RESC 的 `val` 命名。无需重新下载原始 BTCV/LiTS。  
