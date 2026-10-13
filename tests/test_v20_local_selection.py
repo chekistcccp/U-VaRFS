@@ -162,7 +162,7 @@ def test_default_protocol_declares_real_method_change_and_original_feature_cap()
     cfg=load_config(Path(__file__).resolve().parents[1]/'configs/default.yaml')
     assert cfg['uvarfs']['objective']==MATCHING and cfg['asls']['discrete_selection']=='normal_local'
     assert cfg['representation']['layer_normalization']=='l2' and cfg['uvarfs']['max_features']==256
-    assert len(expected_method_names(cfg))==262
+    assert len(expected_method_names(cfg))==352
     assert EXPERIMENT_VERSION in cfg['results_dir']
 
 

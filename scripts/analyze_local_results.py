@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only v20/v21 auditing; result files and reports remain outside Git."""
+"""Read-only v20/v21/v22 auditing; results stay in project, outside Git."""
 from __future__ import annotations
 import argparse
 import json
@@ -105,7 +105,31 @@ def audit_matching_solution(result, cfg):
     if not np.isclose(1/np.square(p).sum(),result['effective_weight_dimension'],rtol=1e-9):
         raise ValueError('matching effective dimension mismatch')
     pool=result['candidate_pool'];training_pool=[]
-    maximum=3*(2+2*int(cfg.get('matching_exchange_max_steps',2))*int(cfg.get('matching_exchange_candidates',4)))
+    original_maximum=3*(2+2*int(cfg.get('matching_exchange_max_steps',2))*int(cfg.get('matching_exchange_candidates',4)))
+    diversity=cfg.get('matching_diverse_starts',False)
+    if diversity:
+        if (result.get('matching_diverse_starts') is not True or result.get('matching_diverse_start_count')!=3 or
+                result.get('matching_diversity_policy')!='normal_centered_and_neighbor_contrast_rank_revealing_coordinates' or
+                not isinstance(result.get('matching_v21_candidate_count'),int) or
+                not 1<=result['matching_v21_candidate_count']<=original_maximum or
+                set(result.get('matching_diversity_diagnostics',{}))!={'normal_covariance_rrqr','normal_neighbor_rrqr','stable_normal_neighbor_rrqr'}):
+            raise ValueError('matching diversity identity or v21 coverage mismatch')
+    elif any(key.startswith('matching_divers') or key.startswith('matching_v21_candidate') for key in result):
+        raise ValueError('unexpected diversity metadata in original v21 control')
+    maximum=original_maximum*(2 if diversity else 1)
+    polish_maximum=cfg.get('matching_polish_max_iter',0)
+    base_count=result.get('matching_base_candidate_count',len(pool))
+    if polish_maximum:
+        if (result.get('matching_polish_strategy')!='fit_only_scaled_slsqp_on_v21_supports' or
+                result.get('matching_polish_max_iter')!=polish_maximum or
+                result.get('matching_polish_ftol')!=float(cfg.get('matching_polish_ftol',1e-12)) or
+                not isinstance(base_count,int) or not 1<=base_count<=maximum or
+                result.get('matching_polish_added_candidates')!=len(pool)-base_count or
+                result.get('matching_polish_unique_supports')!=len({tuple(c['active']) for c in pool[:base_count]})):
+            raise ValueError('matching polish identity or original pool coverage mismatch')
+        maximum=base_count+result['matching_polish_unique_supports']
+    elif any(key.startswith('matching_polish_') or key.startswith('matching_base_') for key in result):
+        raise ValueError('unexpected polish metadata in original v21 control')
     if not 1<=len(pool)<=maximum or result['fixed_feature_budget']!=k:
         raise ValueError('matching candidate or feature budget mismatch')
     for key in ['fit_score_scale','fit_distribution_scale','fit_nuisance_scale',
@@ -133,10 +157,57 @@ def audit_matching_solution(result, cfg):
             hist=np.asarray(c['diagnostics']['training_history'])
             if not np.isfinite(hist).all() or (np.diff(hist)>1e-10).any() or not np.isclose(hist[-1],c['training_objective'],rtol=1e-8,atol=1e-9):
                 raise ValueError('matching refit history fails strict descent')
+        if i>=base_count:
+            diag=c.get('diagnostics') or {};parent_id=diag.get('parent_candidate_id')
+            if (not polish_maximum or not isinstance(parent_id,int) or not 0<=parent_id<base_count or
+                    c['active']!=pool[parent_id]['active'] or
+                    c['source']!='scaled_slsqp:'+pool[parent_id]['source'] or
+                    not c['training_objective']<pool[parent_id]['training_objective']-1e-8 or
+                    diag.get('maximum')!=polish_maximum or diag.get('ftol')!=result['matching_polish_ftol'] or
+                    diag.get('scaled_variable')!='mass=K*p; gradient_mass=gradient_p/K' or
+                    diag.get('certificate')!='fixed_support_current_nearest_branch_projected_residual_only' or
+                    not 0<=diag.get('iterations',-1)<=polish_maximum or
+                    not np.isclose(diag['training_history'][0],pool[parent_id]['training_objective'],rtol=1e-8,atol=1e-9)):
+                raise ValueError('matching polish changed support or failed strict fit improvement')
         training_pool.append({key:value for key,value in c.items() if key not in remove})
     digest=hashlib.sha256(json.dumps(training_pool,sort_keys=True,allow_nan=False).encode()).hexdigest()
     if digest!=result['candidate_pool_fit_only_sha256']:
         raise ValueError('fit-only matching pool fingerprint mismatch')
+    if polish_maximum and hashlib.sha256(json.dumps(training_pool[:base_count],sort_keys=True,allow_nan=False).encode()).hexdigest()!=result.get('matching_base_candidate_pool_fit_only_sha256'):
+        raise ValueError('original v21 fit-only pool fingerprint mismatch')
+    if diversity and hashlib.sha256(json.dumps(training_pool[:result['matching_v21_candidate_count']],sort_keys=True,allow_nan=False).encode()).hexdigest()!=result.get('matching_v21_candidate_pool_fit_only_sha256'):
+        raise ValueError('preserved v21 fit-only pool fingerprint mismatch')
+    if polish_maximum:
+        attempts=result.get('matching_polish_attempts')
+        if not isinstance(attempts,list) or len(attempts)!=result['matching_polish_unique_supports']:
+            raise ValueError('missing complete matching polish attempt costs')
+        parents={}
+        for c in pool[:base_count]:
+            key=tuple(c['active'])
+            if key not in parents or c['training_objective']<parents[key]['training_objective']:
+                parents[key]=c
+        if [a['parent_candidate_id'] for a in attempts]!=[c['candidate_id'] for c in parents.values()]:
+            raise ValueError('matching polish warm start selected outside fit objective')
+        added=[]
+        for a in attempts:
+            parent=pool[a['parent_candidate_id']];diag=a['diagnostics'];hist=np.asarray(diag['training_history'])
+            if (not np.isfinite(a['seconds']) or a['seconds']<0 or not np.isfinite(hist).all() or
+                    (np.diff(hist)>1e-10).any() or not np.isfinite(a['training_objective']) or
+                    a['training_objective']>parent['training_objective']+1e-10 or
+                    not np.isclose(hist[0],parent['training_objective'],rtol=1e-8,atol=1e-9) or
+                    not np.isclose(hist[-1],a['training_objective'],rtol=1e-8,atol=1e-9) or
+                    diag['maximum']!=polish_maximum or diag['ftol']!=result['matching_polish_ftol'] or
+                    not 0<=diag['iterations']<=polish_maximum):
+                raise ValueError('invalid matching polish attempt record')
+            if a['added_candidate_id'] is not None:
+                j=a['added_candidate_id']
+                if not isinstance(j,int) or not base_count<=j<len(pool) or pool[j]['diagnostics']!=diag or not np.isclose(pool[j]['training_objective'],a['training_objective'],rtol=1e-8,atol=1e-9):
+                    raise ValueError('matching polish attempt does not match added candidate')
+                added.append(j)
+            elif a['training_objective']<parent['training_objective']-1e-8:
+                raise ValueError('matching polish improving point omitted')
+        if added!=list(range(base_count,len(pool))):
+            raise ValueError('matching polish candidate coverage mismatch')
     for exchange in result['accepted_exchange_trace']:
         c=pool[exchange['candidate_id']]
         if not exchange['after']<exchange['before']-1e-8 or not np.isclose(exchange['after'],c['training_objective']):
@@ -162,7 +233,7 @@ def audit(results, output, completed_only=False, draws=2000):
     for name,folder in sorted(folders.items()):
         meta=read(folder/'run_metadata.json');cfg=meta['config']
         version=meta['experiment_version']
-        if version not in {EXPERIMENT_VERSION,'gpu-eval-v20-normal-local-selection'} or cfg['uvarfs']['objective'] not in {LOCAL,MATCHING} or (version=='gpu-eval-v20-normal-local-selection' and cfg['uvarfs']['objective']!=LOCAL):
+        if version not in {EXPERIMENT_VERSION,'gpu-eval-v21-normal-matching-distribution','gpu-eval-v20-normal-local-selection'} or cfg['uvarfs']['objective'] not in {LOCAL,MATCHING} or (version=='gpu-eval-v20-normal-local-selection' and cfg['uvarfs']['objective']!=LOCAL):
             raise ValueError('mixed version or non-local results')
         if meta['config_fingerprint']!=config_fingerprint(cfg):
             raise ValueError('config fingerprint mismatch')
@@ -207,6 +278,7 @@ def audit(results, output, completed_only=False, draws=2000):
         manifest=read(folder/'representation_manifest.json');indexed=frame.set_index('method')
         for branch in experiment_branches(cfg):
             base=folder/branch['folder'];prefix=branch['prefix'];bm=read(base/'fit_manifest.json')
+            solver_cfg={**cfg['uvarfs'],**{key:branch[key] for key in ['matching_polish_max_iter','matching_diverse_starts'] if key in branch}}
             for key in ['normal_train_indices','normal_train_paths','sampled_patches','perturbation_rng','normal_selection_split']:
                 if fit[key]!=bm[key]:
                     raise ValueError('branches do not share normal input/split')
@@ -231,7 +303,7 @@ def audit(results, output, completed_only=False, draws=2000):
             if selected['layers']!=asls['selected_layers'] or not np.isclose(selected['selection_score'],asls['selection_score']):
                 raise ValueError('ASLS holdout selection mismatch')
             for path in base.glob('uvarfs_*.json'):
-                audit_solver_result(path,cfg['uvarfs'])
+                audit_solver_result(path,solver_cfg)
             main=read(base/'uvarfs_main.json');main_name=prefix+'main';k=len(main['active'])
             if indexed.loc[main_name,'feature_dim']!=k or main['layers']!=asls['selected_layers']:
                 raise ValueError('Main input/support dimensions disagree')
@@ -271,7 +343,7 @@ def audit(results, output, completed_only=False, draws=2000):
                 raise ValueError('image metrics do not match predictions')
         comparisons={m:[m] for m in ['asls_raw','asls_pca','asls_selected_raw','asls_no_variability_uvarfs',
             'asls_no_rank_uvarfs','asls_no_score_uvarfs','asls_no_distribution_uvarfs',
-            'local_main','previous_main','fixed4_raw','all_raw'] if m in indexed.index}
+            'v21_main','local_main','previous_main','fixed4_raw','all_raw'] if m in indexed.index}
         randoms=[f'asls_random_seed{s}' for s in cfg['random_baseline_seeds'] if f'asls_random_seed{s}' in indexed.index]
         if randoms:
             comparisons['asls_random_mean']=randoms

@@ -269,7 +269,19 @@ def generate_fit_only_pool(x, groups, perturbations, cfg, label='uvarfs:matching
             'fixed_support_first_order_residual':float((p-engine.project(p-grad)).abs().max()),
             'solver_iterations':0 if diag is None else diag['iterations'], 'diagnostics':diag})
 
-    for name, active in _starts(x, groups, perturbations if beta else None, beta, k, rank):
+    starts=_starts(x, groups, perturbations if beta else None, beta, k, rank)
+    diversity=cfg.get('matching_diverse_starts',False)
+    if not isinstance(diversity,bool):
+        raise ValueError('matching_diverse_starts must be boolean')
+    original_count=len(starts)
+    if diversity:
+        from .matching_diversity import diverse_starts
+        extra,diversity_diagnostics=diverse_starts(x,groups,perturbations if beta else None,beta,k,rank)
+        starts+=extra
+    for start_i, (name, active) in enumerate(starts):
+        if diversity and start_i==original_count:
+            engine.v21_pool_count=len(pool)
+            engine.v21_pool_hash=hashlib.sha256(json.dumps(pool,sort_keys=True,allow_nan=False).encode()).hexdigest()
         uniform = torch.full((k,),1/k,device=x.device,dtype=torch.float64)
         try:
             record(active, uniform, name+':uniform')
@@ -311,6 +323,53 @@ def generate_fit_only_pool(x, groups, perturbations, cfg, label='uvarfs:matching
         print(f'[{label}] start={name} candidates={len(pool)} elapsed={time.perf_counter()-started:.1f}s',flush=True)
     if not pool:
         raise ValueError('no valid fixed-K matching support')
+    if diversity:
+        engine.diversity_metadata={
+            'matching_diverse_starts':True,'matching_diverse_start_count':len(extra),
+            'matching_diversity_policy':'normal_centered_and_neighbor_contrast_rank_revealing_coordinates',
+            'matching_diversity_diagnostics':diversity_diagnostics,
+            'matching_v21_candidate_count':engine.v21_pool_count,
+            'matching_v21_candidate_pool_fit_only_sha256':engine.v21_pool_hash}
+    polish_maximum = cfg.get('matching_polish_max_iter', 0)
+    if isinstance(polish_maximum,bool) or not isinstance(polish_maximum, int) or polish_maximum < 0:
+        raise ValueError('invalid matching polish budget')
+    if polish_maximum:
+        from .matching_polish import polish_fixed_support
+        base_count = len(pool)
+        base_hash = hashlib.sha256(json.dumps(pool,sort_keys=True,allow_nan=False).encode()).hexdigest()
+        unique = {}
+        for candidate in pool:
+            support = tuple(candidate['active'])
+            if support not in unique or candidate['training_objective'] < unique[support]['training_objective']:
+                unique[support] = candidate
+        polish_started = time.perf_counter()
+        polish_attempts = []
+        for i, (support, parent) in enumerate(unique.items(), 1):
+            active = torch.tensor(support, device=x.device)
+            attempt_started = time.perf_counter()
+            p, value, _, diag = polish_fixed_support(engine, active, parent['weights'],
+                maximum=polish_maximum, ftol=float(cfg.get('matching_polish_ftol',1e-12)))
+            added_id = None
+            if value < parent['training_objective']-1e-8:
+                diag['parent_candidate_id'] = parent['candidate_id']
+                record(active, p, 'scaled_slsqp:'+parent['source'], diag)
+                added_id = len(pool)-1
+            polish_attempts.append({'parent_candidate_id':parent['candidate_id'],
+                'added_candidate_id':added_id,'training_objective':value,
+                'diagnostics':diag,'seconds':time.perf_counter()-attempt_started})
+            print(f'[{label}] polish={i}/{len(unique)} candidates={len(pool)} '
+                  f'elapsed={time.perf_counter()-polish_started:.1f}s',flush=True)
+        engine.polish_metadata = {
+            'matching_polish_strategy':'fit_only_scaled_slsqp_on_v21_supports',
+            'matching_polish_max_iter':polish_maximum,
+            'matching_polish_ftol':float(cfg.get('matching_polish_ftol',1e-12)),
+            'matching_base_candidate_count':base_count,
+            'matching_base_candidate_pool_fit_only_sha256':base_hash,
+            'matching_polish_unique_supports':len(unique),
+            'matching_polish_added_candidates':len(pool)-base_count,
+            'matching_polish_attempts':polish_attempts,
+            # Timings stay outside the reproducible, fit-only pool hash.
+            'matching_polish_seconds':time.perf_counter()-polish_started}
     return engine, pool, accepted
 
 
@@ -374,4 +433,5 @@ def fit_matching_uvarfs(x, heldout, groups, heldout_groups, perturbations, cfg,
         'fit_nuisance_scale':float(engine.vscale), 'validation_score_scale':float(validation.score_scale),
         'validation_distribution_scale':float(validation.scale),
         'evaluation_requests':engine.evaluations+validation.evaluations,
-        **selected['training_terms']}
+        **selected['training_terms'], **getattr(engine,'polish_metadata',{}),
+        **getattr(engine,'diversity_metadata',{})}

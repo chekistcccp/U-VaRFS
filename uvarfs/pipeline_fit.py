@@ -453,6 +453,11 @@ def fit_all_method_specs(extractor, train_samples, cfg, dataset_out):
         settings={**cfg,'representation':{'layer_normalization':mode,'ablation_layer_normalization':None},
                   'methods':methods_for_objective(cfg,branch['objective']),
                   'uvarfs':{**cfg['uvarfs'],'objective':branch['objective'],'ablation_objective':None,'control_objectives':[]}}
+        for key in ['matching_polish_max_iter','matching_diverse_starts']:
+            if key in branch:
+                settings['uvarfs'][key]=branch[key]
+        # This is a single branch; control expansion belongs to the outer loop.
+        settings['uvarfs'].pop('matching_v21_control',None)
         output=dataset_out/branch['folder']
         fitted=fit_method_specs(extractor,train_samples,settings,output,collected,caches[mode],method_prefix=prefix)
         specs.update({prefix+name:spec for name,spec in fitted.items()})

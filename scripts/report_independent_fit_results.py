@@ -23,7 +23,8 @@ PIXEL = ['brain', 'liver', 'resc']
 METRICS = ['image_auroc', 'image_auprc', 'pixel_auroc', 'pixel_auprc', 'aupro']
 SEEDS = {42, 123, 3407}
 VERSIONS = {'gpu-eval-v20-normal-local-selection': 172,
-            'gpu-eval-v21-normal-matching-distribution': 262}
+            'gpu-eval-v21-normal-matching-distribution': 262,
+            'gpu-eval-v22-diverse-matching-support': 352}
 
 
 def read(path):
@@ -71,11 +72,15 @@ def validate_frame(frame, version):
     values = frame[METRICS].to_numpy(dtype=float)
     if np.any((values[np.isfinite(values)] < 0) | (values[np.isfinite(values)] > 1)):
         raise ValueError('metrics must be fractions in [0,1]')
-    if version.endswith('v21-normal-matching-distribution'):
+    if version in {'gpu-eval-v21-normal-matching-distribution','gpu-eval-v22-diverse-matching-support'}:
         needed = {'main', 'asls_no_score_uvarfs', 'asls_no_distribution_uvarfs',
                   'asls_no_variability_uvarfs', 'local_main'}
         if not needed <= methods:
             raise ValueError('v21 causal/previous-main controls missing')
+    if version=='gpu-eval-v22-diverse-matching-support' and not {
+            'v21_main','raw_input_v21_main','v21_asls_no_variability_uvarfs',
+            'v21_asls_no_score_uvarfs','v21_asls_no_distribution_uvarfs'} <= methods:
+        raise ValueError('complete original v21 controls missing')
     return methods
 
 
@@ -83,7 +88,7 @@ def families(methods, prefix, random_seeds):
     names = ['main', 'asls_raw', 'asls_pca', 'asls_selected_raw',
              'asls_no_variability_uvarfs', 'asls_no_score_uvarfs',
              'asls_no_distribution_uvarfs', 'asls_no_rank_uvarfs',
-             'local_main', 'previous_main', 'fixed4_raw', 'all_raw', 'last_raw']
+             'v21_main', 'local_main', 'previous_main', 'fixed4_raw', 'all_raw', 'last_raw']
     result = {prefix + n: [prefix + n] for n in names if prefix + n in methods}
     for label, stem in [('Random256 mean', 'asls_random_seed'), ('Random-K layer mean', 'randomk_raw_seed')]:
         group = [prefix + stem + str(s) for s in random_seeds]

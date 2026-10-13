@@ -144,7 +144,7 @@ def test_default_approved_protocol_preserves_all_v20_controls_and_budget():
     assert cfg['asls']['discrete_selection']=='normal_local' and EXPERIMENT_VERSION in cfg['results_dir']
     old=load_config(Path(__file__).resolve().parents[1]/'configs/v20_control.yaml')
     expected=expected_method_names(cfg)
-    assert len(expected)==262
+    assert len(expected)==352
     # Old Gram names retain identity; prior Main/input controls become local_*.
     for name in expected_method_names(old):
         renamed=name if name.startswith(('gram_','raw_input_gram_')) else (

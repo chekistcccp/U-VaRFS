@@ -3,7 +3,7 @@ paths:
   raw_data: data
   processed_data: data/processed/BMAD
   model_dir: models/dinov3_vitsplus
-results_dir: results/gpu-eval-v21-normal-matching-distribution
+results_dir: results/gpu-eval-v22-diverse-matching-support
 
 representation:
   # One declared cosine geometry for layer fit, feature fit, memory and query.
@@ -45,7 +45,7 @@ asls:
   max_layers: 6
 
 uvarfs:
-  # Approved v21: actual normal 1-NN score + all-reference distribution + nuisance.
+  # Same approved objective; v22 expands fit-only coordinate support search.
   objective: normal_matching_distribution_fixed_budget
   matching_temperature_rank: 8
   matching_score_weight: 1.0
@@ -54,6 +54,11 @@ uvarfs:
   matching_refit_max_iter: 150
   matching_exchange_max_steps: 2
   matching_exchange_candidates: 4
+  matching_diverse_starts: true
+  matching_polish_max_iter: 200
+  matching_polish_ftol: 1.0e-12
+  # Exact previous v21 search, including all input/layer/causal controls.
+  matching_v21_control: true
   # Complete v20 local and original quadratic branches, on both input geometries.
   control_objectives: [normal_local_fixed_budget]
   local_neighbor_rank: 8

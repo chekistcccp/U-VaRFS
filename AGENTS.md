@@ -1,6 +1,6 @@
 # U-VaRFS Project Agent Guide
 
-> **当前Main以第46节和[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)为准。** 用户于2026-10-11批准真实正常1-NN分数保持、完整正常邻居分布与nuisance稳定性的新U-VaRFS目标、代码同步和独立全六三种子验证，同时允许物理GPU0–3并行。第45节ASLS/数据协议继续保持，v20 U-VaRFS完整保留为`local_*`控制。性能仍须真实实验验证；不以正常loss、压缩或工程提速声明成功。**2026-10-13最新强制存储要求见第47.1节和[EXPERIMENT_STORAGE.md](EXPERIMENT_STORAGE.md)：全部实验产物保存在服务器及本机当前项目内，结束后主动完整回传并逐文件SHA校验，Git忽略；SSH密钥、连接设置与必要调度控制单独保存。**
+> **当前Main以第48节和[DIVERSE_MATCHING_SUPPORT.md](DIVERSE_MATCHING_SUPPORT.md)为准；第46节数学目标保持。** 用户于2026-10-11批准真实正常1-NN分数保持、完整正常邻居分布与nuisance稳定性的新U-VaRFS目标、代码同步和独立全六三种子验证，同时允许物理GPU0–3并行。第45节ASLS/数据协议继续保持，v20 U-VaRFS完整保留为`local_*`控制。性能仍须真实实验验证；不以正常loss、压缩或工程提速声明成功。**2026-10-13最新强制存储要求见第47.1节和[EXPERIMENT_STORAGE.md](EXPERIMENT_STORAGE.md)：全部实验产物保存在服务器及本机当前项目内，结束后主动完整回传并逐文件SHA校验，Git忽略；SSH密钥、连接设置与必要调度控制单独保存。**
 
 > **用途：Codex 项目迁移与长期开发约束。**
 >
@@ -1559,3 +1559,18 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 项目外旧实验文件先核验再迁回；活动任务不得直接搬动，须等待原进程安全退出再做终态迁移。迁移完成必须核验真实项目路径，不能只更新文档或创建指向项目外的链接。项目外旧路径只可作为指向项目内文件的兼容入口。
 - 唯一例外为SSH密钥、密码、连接设置和必要的访问/调度控制；它们不属于实验产物，仍单独保存且不进入Git。实验日志、配置、缓存、结果或报告不能借此例外外置。
 - 代码/配置/限制规则正常提交同步；`results/`、`reports/`、`logs/`中的实验产物继续Git忽略，不提交或推送。不因此修改研究设计、实验版本、原始指标或来源指纹。
+
+
+---
+
+# 48. 2026-10-13 v22 互补稀疏支持与同目标精修（当前Main）
+
+用户要求分析完整实验、按研究目标优化并继续实验。精确算法与第19节检查见[DIVERSE_MATCHING_SUPPORT.md](DIVERSE_MATCHING_SUPPORT.md)。第46节真实normal1-NN分数/完整邻居分布/nuisance目标、ASLS、逐层L2/raw、数据与256维预算、Frozen backbone和简单detector均保持。本轮只扩大fit-only支持搜索及同目标数值求解，不引入异常标签/mask或按test选参数。
+
+- 原三起点完整保留，增加normal centered covariance、跨图normal近邻差、nuisance稳定近邻差的列支点互补坐标起点。推理仍选原始latent维数，不旋转/中心化，不强制层配额。β0所有特征阶段忽略扰动。
+- 六起点使用原150步refit、两轮四提案交换；每个唯一支持按训练目标选已有warm start，mass=K*p的同约束SLSQP最多200步/ftol1e-12，独立评价严格下降才添加。保存原候选、全部尝试/拒绝成本；完整拟合池先哈希，后创建holdout validator。当前最近分支残差与optimizer状态不证明非凸/离散最优。
+- 原v21完整90方法成为v21_*与raw_input_v21_*；原v20/Gram172控制完整保留，新Main90方法，共352/数据集、6336/全六三fit。configs/v21_control.yaml保留原配置。不能把Random seeds当Main重复。
+- 新版本gpu-eval-v22-diverse-matching-support、新独立项目内目录/指纹；旧结果只读不混合。物理GPU0–3、fit/memory seeds42/123/3407，工程验证通过后固定执行全部18任务，不按test改后续配置。代码检查提交同步，全部结果/日志/报告实际存于两端项目并主动SHA收回，Git忽略，遵循47.1。
+- 原正常匹配目标仅是代理。必须用全六独立三fit检测/定位、同输入Raw/PCA/五Random/β0、v21/v20控制和真实成本判断性能收益；不以低正常loss、更强压缩或提速宣布成功。源码/config/executor运行期间冻结，禁止重复启动；启动核验一次，随后预计窗口和数小时间隔跟进。
+
+本轮本地247项回归通过，10项CUDA因本机无runtime跳过；独立梯度/oracle、原v21池保持、holdout不参与支持生成、β0扰动独立、352方法共享fit/memory/image/pixel、全部尝试成本与严格resume/审计通过。原MatchingObjective/temperature/三起点AST保持，ASLS/backbone/detector/evaluation及科学配置逐项保护。真实四卡检查与全六三fit检测结果分别验证，不能由实现通过宣布性能成功。

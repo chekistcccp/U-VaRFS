@@ -1,0 +1,158 @@
+seed: 42
+paths:
+  raw_data: data
+  processed_data: data/processed/BMAD
+  model_dir: models/dinov3_vitsplus
+results_dir: results/gpu-eval-v21-normal-matching-distribution
+
+representation:
+  # One declared cosine geometry for layer fit, feature fit, memory and query.
+  layer_normalization: l2
+  ablation_layer_normalization: none
+
+model:
+  modelscope_id: keras/dinov3_vit_small_plus_lvd1689m
+  input_size: 448
+  batch_size: 8
+  num_workers: 8
+  amp: bf16
+  compile: false
+
+data:
+  fit_images: 256
+  variability_images: 96
+  normal_holdout_fraction: 0.25  # 192 fit + 64 holdout, within the original 256
+  patches_per_image: 16
+  variability_epsilon: 1.0e-6
+  memory_size: 20000
+  memory_images: 1024
+  memory_patches_per_image: 32
+  test_batch_size: 16
+
+asls:
+  geometry_representation: patch
+  # Performance proxy across the entire 2--6 layer budget; no min-K priority.
+  discrete_selection: normal_local
+  local_neighbor_rank: 8
+  local_rank_weight: 1.0
+  geometry_tolerance: 0.05
+  variability_weight: 0.15
+  sparsity_weight: 0.02
+  steps: 300
+  lr: 0.05
+  log_every: 50
+  min_layers: 2
+  max_layers: 6
+
+uvarfs:
+  # Approved v21: actual normal 1-NN score + all-reference distribution + nuisance.
+  objective: normal_matching_distribution_fixed_budget
+  matching_temperature_rank: 8
+  matching_score_weight: 1.0
+  matching_distribution_weight: 1.0
+  matching_chunk: 256
+  matching_refit_max_iter: 150
+  matching_exchange_max_steps: 2
+  matching_exchange_candidates: 4
+  # Complete v20 local and original quadratic branches, on both input geometries.
+  control_objectives: [normal_local_fixed_budget]
+  local_neighbor_rank: 8
+  local_rank_weight: 1.0
+  local_refit_max_iter: 150
+  local_exchange_max_steps: 2
+  local_exchange_candidates: 4
+  # User requests performance priority: fixed maximum K, bounded relative weights.
+  performance_weight_cap_factor: 4.0
+  # The following exchange/cache settings belong to the previous cosine control.
+  performance_exchange_strategy: refit_before_accept
+  performance_exchange_max_steps: 8
+  performance_exchange_candidates: 8
+  performance_objective_cache_mib: 128  # bounded exact last-state reuse; 0 disables
+  ablation_objective: quadratic_gram
+  sparsity_strategy: objective_forward_refit
+  cosine_support_step: 32
+  # Same-objective finite deletions avoid vanishing first-order scores at stationarity.
+  cosine_pruning_strategy: exact_objective_deletion
+  cosine_weight_floor_mass: 0.0001
+  cosine_geometry_chunk: 512
+  cosine_refit_max_iter: 2000
+  # Same-objective numerical polish; optimizer success is not convergence.
+  cosine_polish_max_iter: 200
+  cosine_polish_ftol: 1.0e-12
+  cosine_initial_step: 0.05
+  cosine_line_search_steps: 20
+  cosine_exchange_max_steps: 8
+  cosine_exchange_candidates: 8
+  support_refit_max_iter: 2000
+  support_exchange_max_steps: 8
+  support_exchange_chunk: 256
+  support_exchange_min_improvement: 1.0e-8
+  beta: 0.002
+  lambda_grid: [0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001, 0.00005, 0.00002, 0.00001, 0.000005, 0.000002, 0.000001]
+  geometry_tolerance: 0.05
+  # Numerical solve budget; objective, lambda path and data budgets are unchanged.
+  max_iter: 2000
+  tol: 1.0e-5
+  check_every: 25
+  log_every: 50
+  min_features: 32
+  max_features: 256
+  active_threshold: 1.0e-4
+  diagnose_infeasible: true
+
+methods:
+  - main
+  - asls_no_variability_uvarfs
+  - asls_no_rank_uvarfs
+  - asls_no_score_uvarfs
+  - asls_no_distribution_uvarfs
+  # Complete previous ASLS + fixed-budget cosine method under shared v20 data.
+  - previous_main
+  - last_raw
+  - fixed4_raw
+  - all_raw
+  - asls_raw
+  # Same Main support with uniform relative weights; diagnostic ablation only.
+  - asls_selected_raw
+  # Previous compression-first cosine Main on the same normal inputs.
+  - asls_compression_uvarfs
+  # Complete v17 fixed-budget solver on the same ASLS normal input.
+  - asls_fixed_budget_uvarfs
+  - asls_pca
+  - asls_random
+  - fixed4_uvarfs
+  - all_uvarfs
+  - random4_uvarfs
+  - randomk_raw
+  - randomk_uvarfs
+  - asls_pooled_raw
+  - asls_pooled_uvarfs
+  - asls_geometry_search_raw
+  - asls_geometry_search_uvarfs
+  - asls_gate_prefix_raw
+  - asls_gate_prefix_uvarfs
+  - asls_top_weights_uvarfs
+  - asls_prune_refit_uvarfs
+  - asls_exchange_refit_uvarfs
+  - legacy_main
+
+random_baseline_seeds: [42, 123, 3407, 2026, 2027]
+
+eval:
+  # auto => CUDA-native exact cosine 1-NN when a GPU is available; FAISS is fallback only.
+  nn_backend: auto
+  score_device: auto
+  score_dtype: fp16
+  query_chunk: 2048
+  memory_chunk: 0
+  heartbeat_batches: 20
+  resume_completed: true
+  topk_fraction: 0.01
+  bootstrap_samples: 1000
+  bootstrap_batch_size: 32
+  save_heatmaps: true
+  max_heatmaps_per_dataset: 12
+  heatmap_methods: [all_raw, main]
+  faiss_gpu: true
+  faiss_exact: true
+  faiss_nprobe: 16

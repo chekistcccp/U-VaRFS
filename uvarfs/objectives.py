@@ -32,6 +32,11 @@ def objective_modes(cfg):
 def experiment_branches(cfg):
     primary_input,inputs=normalization_modes(cfg)
     primary_objective,objectives=objective_modes(cfg)
+    v21_control = cfg.get('uvarfs',{}).get('matching_v21_control',False)
+    polish = cfg.get('uvarfs',{}).get('matching_polish_max_iter',0)
+    if not isinstance(v21_control,bool) or (v21_control and (
+            primary_objective!=MATCHING or isinstance(polish,bool) or not isinstance(polish,int) or polish<=0)):
+        raise ValueError('v21 solver control requires a polished matching Main')
     branches=[]
     for mode in inputs:
         input_prefix='' if mode==primary_input else normalization_prefix(mode)
@@ -40,4 +45,9 @@ def experiment_branches(cfg):
             branches.append({'layer_normalization':mode,'objective':objective,
                 'prefix':input_prefix+objective_prefix,
                 'folder':'/'.join(part for part in [input_prefix.rstrip('_'),objective_prefix.rstrip('_')] if part)})
+            if v21_control and objective==MATCHING:
+                branches.append({'layer_normalization':mode,'objective':MATCHING,
+                    'prefix':input_prefix+'v21_',
+                    'folder':'/'.join(part for part in [input_prefix.rstrip('_'),'v21'] if part),
+                    'matching_polish_max_iter':0,'matching_diverse_starts':False})
     return branches

@@ -1,4 +1,4 @@
-> **当前 v21：正常匹配分数与完整邻居分布稀疏保持**。研究核心是开发改善检测与定位性能的稀疏特征选择。ASLS和逐层L2沿用v20；U-VaRFS保持原256维预算，以实际正常1-NN分数、完整reference分布和nuisance稳定性拟合。v20和全部旧目标、raw、PCA与五seed随机控制保留。已获用户批准，精确设计见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)；真实性能尚待全六三独立种子验证。
+> **当前v22：同一正常匹配目标的互补稀疏支持搜索。** Frozen DINOv3 + ASLS + U-VaRFS主线、真实正常1-NN/完整分布/nuisance目标及256维预算保持；增加三个fit-only互补原始坐标起点和同目标数值精修。完整v21/v20/Gram及Raw/PCA/五Random控制保留，默认352方法。设计见[DIVERSE_MATCHING_SUPPORT.md](DIVERSE_MATCHING_SUPPORT.md)，真实性能须全六独立三fit验证。
 
 > **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告保存在服务器及本机当前项目的`results/`、`reports/`、`logs/`中，由Git忽略，不默认提交或推送。
 
@@ -203,7 +203,7 @@ Y = X diag(sqrt(p))
 
 三个正常拟合起点保留uniform与固定支持重拟合；两轮、每轮四个支持提案只使用拟合集，严格按拟合目标接受继续搜索。完整fit候选池先生成并哈希，再用正常留出matching损失加拟合nuisance选择有限池。保持固定256预算，不优先压缩。float64分块解析梯度保持全部reference分布；只记录固定支持当前最近分支的投影残差，不宣称全局最优或检测保证。
 
-`asls_no_variability_uvarfs`删除全部特征阶段nuisance使用；`asls_no_score_uvarfs`与`asls_no_distribution_uvarfs`检验两新项。同支持uniform、相同输入Raw/PCA/五Random以及完整v20 `local_*`与original `gram_*`、所有历史目标控制保留。默认262方法/数据集。公式、尺度、候选、证据边界与并行审计见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)。
+`asls_no_variability_uvarfs`删除全部特征阶段nuisance使用；`asls_no_score_uvarfs`与`asls_no_distribution_uvarfs`检验两新项。同支持uniform、相同输入Raw/PCA/五Random以及完整v20 `local_*`与original `gram_*`、所有历史目标控制保留。默认352方法/数据集，完整旧v21另以v21_*控制保留。公式、尺度、候选、证据边界与并行审计见[NORMAL_MATCHING_DISTRIBUTION.md](NORMAL_MATCHING_DISTRIBUTION.md)。
 
 ---
 
@@ -656,14 +656,14 @@ bash run.sh
 - detector 保持简单，避免性能提升来自复杂下游网络；
 - 所有主要创新通过统一 BMAD protocol 和严格 ablation 验证。
 
-当前版本为 `gpu-eval-v21-normal-matching-distribution`，默认262方法、全六1572行/独立种子。先固定设计验证Liver运行，再统一全六；不要据Liver test更改其余数据集Main。独立重复和只读审计：
+当前版本为 `gpu-eval-v22-diverse-matching-support`，默认352方法、全六2112行/独立种子。先固定设计验证Liver运行，再统一全六；不要据Liver test更改其余数据集Main。独立重复和只读审计：
 
 ```bash
 SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 DATASETS=liver bash run.sh
 SKIP_PREPROCESS=1 SKIP_MODEL_DOWNLOAD=1 bash run.sh
 python -m scripts.run_all --seed 123
 python -m scripts.run_all --seed 3407
-python -m scripts.analyze_local_results --results results/gpu-eval-v21-normal-matching-distribution --out OUTSIDE_REPO
+python -m scripts.analyze_local_results --results results/gpu-eval-v22-diverse-matching-support --out reports/v22-independent-audit
 ```
 
 独立seed汇总使用分析器`--seed-results`，要求每个seed全六完整且设计/代码一致；部分回传使用`--completed-only`，不称为全六宏平均。本地实现检查通过不能代替真实检测实验。

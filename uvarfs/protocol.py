@@ -7,7 +7,7 @@ from pathlib import Path
 from .representation import normalization_modes, normalization_prefix
 from .objectives import experiment_branches, methods_for_objective
 
-EXPERIMENT_VERSION = 'gpu-eval-v21-normal-matching-distribution'
+EXPERIMENT_VERSION = 'gpu-eval-v22-diverse-matching-support'
 BMAD_DATASETS = {'brain', 'liver', 'resc', 'oct2017', 'xray', 'camelyon16'}
 RANDOM_FAMILIES = {'asls_random', 'random4_uvarfs', 'randomk_raw', 'randomk_uvarfs'}
 
