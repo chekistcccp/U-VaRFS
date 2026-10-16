@@ -1,0 +1,8 @@
+# Opt-in normal-only pilot. Never consumed by run_all.py/default Main.
+pilot_version: normal-tail-selection-pilot-v1
+feature_budget: 256
+selector:
+  top_fraction: 0.01
+  tail_fraction: 0.25
+  mean_se_multiplier: 1.0
+  chunk: 256

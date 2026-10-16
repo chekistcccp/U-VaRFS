@@ -1574,3 +1574,17 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 原正常匹配目标仅是代理。必须用全六独立三fit检测/定位、同输入Raw/PCA/五Random/β0、v21/v20控制和真实成本判断性能收益；不以低正常loss、更强压缩或提速宣布成功。源码/config/executor运行期间冻结，禁止重复启动；启动核验一次，随后预计窗口和数小时间隔跟进。
 
 本轮本地247项回归通过，10项CUDA因本机无runtime跳过；独立梯度/oracle、原v21池保持、holdout不参与支持生成、β0扰动独立、352方法共享fit/memory/image/pixel、全部尝试成本与严格resume/审计通过。原MatchingObjective/temperature/三起点AST保持，ASLS/backbone/detector/evaluation及科学配置逐项保护。真实四卡检查与全六三fit检测结果分别验证，不能由实现通过宣布性能成功。
+
+---
+
+# 49. 2026-10-16 正常图像尾部保真候选（独立pilot，非当前Main）
+
+用户要求调用相关技能改进并同步GitHub。新增可选normal-only研究工具，精确定义与第19节检查见[NORMAL_TAIL_PILOT.md](NORMAL_TAIL_PILOT.md)。第48节注册Main、第46节原数学目标、默认配置及正在执行的冻结实验保持；本轮不连接实验服务器、不自动部署/启动或修改活动任务。
+
+- 从已保存且SHA核验的fit-only matching候选池重新比较，保留原支持/权重/256维及mean winner；不扩大支持搜索、不增加backbone forward、不访问异常标签或mask。
+- 对每张正常留出图像独立计算dense/student的采样patch Top-1%分数误差。平均图像误差和最差25%图像CVaR均不得劣于原winner；原平均matching+nuisance损失只允许一个正常图像cluster SE的预设宽容带。无严格尾部改善时原样回退，不声称该SE为置信界或检测非劣证明。
+- 要求β>0和β0两份配对解、原清单/缓存一致；输出mean/tail两因素和同支持uniform表示。仅显式运行`scripts.run_normal_tail_pilot`与`configs/normal_tail_pilot.yaml`生效，身份为normal-tail-selection-pilot-v1；原352方法与默认EXPERIMENT_VERSION不变，不将pilot冒充新Main或完整BMAD实验。
+- 当前每图16个采样patch的Top-1%实际为最大值，不是完整网格；64图留出也曾用于ASLS，不能宣称独立最终验证或患者隔离。该候选只检验正常尾部失真，不解决未知异常方向不可辨识性，不用低正常风险宣布性能成功。
+- 源输入只读、输出逐SHA、真实路径与Git忽略保护，产物全部位于项目results/logs/reports；代码/配置/设计文档按授权检查后提交同步，结果不提交。若后续激活新Main或改数学目标，须先具体审查设计及固定全六三fit评价，禁止按test挑参数/分支。
+
+本地完整回归257项通过、11项CUDA检查因无本机runtime跳过；新增逐图ceil/Top-K、分数自身近邻、分块等值、分数均值与图像cluster SE、分数CVaR边界质量、同池保护/明确回退、源清单错配/篡改拒绝、β0配对、原文件保持与独立输出/transform适配检查通过。原Main源码和默认配置逐文件保持；实际检测/定位收益尚待独立验证，正常pilot不是性能证据。
