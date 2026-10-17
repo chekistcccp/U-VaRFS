@@ -1614,3 +1614,16 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 四卡物理0–3，先真实Liver normal-only工程验证，再冻结完整计划，不按新test改变后续配置。代码测试后提交同步；所有实验产物在两端项目内并主动完整SHA回传，遵循47.1。主比较对象ridge_matching，ridge_only/β0/uniform为预设解释控制；不能择优换主结论。真实收益未证实，不由谱覆盖、正常loss或计算耗时宣布成功。
 
 完整本地回归274项通过、12项CUDA因本机无runtime跳过；最终贪心投影准则及来源保护调整后13项定向检查通过、1项CUDA跳过，覆盖独立SVD/逆矩阵与实际投影下降oracle、秩不足、弱坐标、旧池/目标保护、β0隔离、真实合成normal缓存拟合/审计、10方法worker及失败/篡改拒绝、全六三来源fit与无mask报告。原Main/默认配置、ASLS、原目标/solver、backbone/detector逐文件保持。真实CUDA与检测收益需分别在服务器验证。
+
+---
+
+# 52. 2026-10-17 匹配梯度联合投影支持追踪（独立继续实验）
+
+用户再次明确要求继续改进、修改代码并继续实验。固定设计及第19节检查见[PURSUIT_SUPPORT_VALIDATION.md](PURSUIT_SUPPORT_VALIDATION.md)。第48节注册Main、第46节原正常1-NN/完整KL/nuisance目标、ASLS、256维及normal-only/detector保持；显式分支`pursuit-support-continuation-v1`不由test自动升级Main。
+
+- 训练目标最优的两个不同旧支持为起点，先原同约束SLSQP最多800步；全坐标原目标梯度用于联合支持投影，固定fit-only排序交叉分位尺度生成最多四提案/轮、最多四轮。每个候选为原K/floor/cap simplex可行点，保留投影/uniform和150步原refit；只有真实训练目标严格下降才继续，结束再800步同目标精修。
+- 原v22完整池逐哈希保留，所有训练候选先冻结哈希，再用原正常holdout目标选有限池。β0不读nuisance；不改损失权重、输入、预算、detector或测试协议。精确欧氏投影不证明非凸匹配全局最优，低正常loss也不证明检测有效。
+- 固定全六×来源fit/memory seeds42/123/3407的18配对延续，180新评价行；原6336控制、尾部108及岭支持180行完整保留/审计。旧锚点逐图精确复现及指标差<=1e-12后才引用旧控制，不冒充新增三次独立抽样。
+- 先Liver真实正常工程与CUDA/协议验证，代码检查同步后冻结四卡0–3执行；全部产物在两端项目并主动SHA回传，遵循47.1，不装依赖、不抢占、不重复，不按test改参数/删对照/切换主结论。完整分析后停本批监控，研究目标未实现不标完成。
+
+本轮完整本地回归290项通过、13项CUDA因本机无runtime跳过；新增投影穷举/独立二分oracle、负输入/平移/边界、联合多坐标更新与真实损失下降、fit-only/β0隔离、原池逐哈希保持、10方法worker及失败拒绝、前轮岭控制/全六报告与正常缓存拟合审计覆盖。原Main、ASLS、原目标/solver、detector及默认配置逐文件保持。服务器真实CUDA与检测收益另行验证。

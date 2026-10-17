@@ -1,0 +1,12 @@
+extension_version: pursuit-support-continuation-v1
+feature_budget: 256
+solver:
+  chunk: 256
+  starts: 2
+  rounds: 4
+  breakpoint_quantiles: [0.0, 0.25, 0.5, 0.75]
+  breakpoint_multiplier: 1.05
+  refit_max_iter: 150
+  tol: 0.00001
+  polish_max_iter: 800
+  polish_ftol: 0.000000000001
