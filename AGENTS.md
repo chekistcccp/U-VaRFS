@@ -1601,3 +1601,16 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 历史test多轮开发、正常采样Top1%为最大值、ASLS复用正常留出、one-SE为启发式等边界保持。检测/定位收益尚待本轮验证，不以正常CVaR、压缩或工程提速宣布成功。
 
 本地完整回归262项通过、11项CUDA因本机无runtime跳过；最终入口调整后15项定向检查通过/1项CUDA跳过，覆盖选择前不解析测试表、六表示评价、原控制逐图/像素点估计复现、源文件保持、篡改/失败拒绝及全六三fit/无mask分析。原Main、默认配置、ASLS、solver、backbone与detector源码逐文件保持。服务器CUDA/真实正常输入检查和真实性能另行验证，不由本地实现检查宣布成功。
+
+---
+
+# 51. 2026-10-17 岭杠杆互补坐标支持（独立继续实验）
+
+用户明确要求继续思考改进、修改代码并继续服务器实验。精确固定设计见[RIDGE_SUPPORT_VALIDATION.md](RIDGE_SUPPORT_VALIDATION.md)。第48节注册Main、第46节数学目标、ASLS、256维、normal-only和简单detector保持；新身份`ridge-support-continuation-v1`，不根据test静默升级Main。
+
+- 对既有正常fit矩阵及跨图邻居差分做fit-only ridge预条件，λ由rank-K尾能量与数值floor确定，在白化后的列上选择原始latent坐标；推理不旋转/白化，不引入PCA Main或异常数据。弱独立方向可能被遗漏只是待检验假设，未证明为既有失败原因。
+- 新支持沿用原1-NN/KL/nuisance目标及floor/cap做refit150步和同目标SLSQP200步；原完整v22池逐哈希保持。全部新拟合池冻结后才创建holdout validator，仍按原正常holdout目标选择。β0全部新拟合忽略扰动值。
+- 全六×来源fit/memory seeds42/123/3407的18配对延续，10表示/区组、180新行；完整原352控制/6336行及上一尾部6控制/108行分别保留。重新拟合新支持/权重，不声称新增三次独立抽样。两项v22锚点逐图分数完全相等、指标差<=1e-12及memory抽样一致后才能引用旧控制。
+- 四卡物理0–3，先真实Liver normal-only工程验证，再冻结完整计划，不按新test改变后续配置。代码测试后提交同步；所有实验产物在两端项目内并主动完整SHA回传，遵循47.1。主比较对象ridge_matching，ridge_only/β0/uniform为预设解释控制；不能择优换主结论。真实收益未证实，不由谱覆盖、正常loss或计算耗时宣布成功。
+
+完整本地回归274项通过、12项CUDA因本机无runtime跳过；最终贪心投影准则及来源保护调整后13项定向检查通过、1项CUDA跳过，覆盖独立SVD/逆矩阵与实际投影下降oracle、秩不足、弱坐标、旧池/目标保护、β0隔离、真实合成normal缓存拟合/审计、10方法worker及失败/篡改拒绝、全六三来源fit与无mask报告。原Main/默认配置、ASLS、原目标/solver、backbone/detector逐文件保持。真实CUDA与检测收益需分别在服务器验证。

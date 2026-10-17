@@ -1,0 +1,9 @@
+extension_version: ridge-support-continuation-v1
+feature_budget: 256
+solver:
+  chunk: 256
+  rank: 8
+  refit_max_iter: 150
+  tol: 0.00001
+  polish_max_iter: 200
+  polish_ftol: 0.000000000001
