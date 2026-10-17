@@ -1627,3 +1627,15 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 先Liver真实正常工程与CUDA/协议验证，代码检查同步后冻结四卡0–3执行；全部产物在两端项目并主动SHA回传，遵循47.1，不装依赖、不抢占、不重复，不按test改参数/删对照/切换主结论。完整分析后停本批监控，研究目标未实现不标完成。
 
 本轮完整本地回归290项通过、13项CUDA因本机无runtime跳过；新增投影穷举/独立二分oracle、负输入/平移/边界、联合多坐标更新与真实损失下降、fit-only/β0隔离、原池逐哈希保持、10方法worker及失败拒绝、前轮岭控制/全六报告与正常缓存拟合审计覆盖。原Main、ASLS、原目标/solver、detector及默认配置逐文件保持。服务器真实CUDA与检测收益另行验证。
+
+---
+
+# 53. 2026-10-17 支持×权重机制验证与正常审计隔离
+
+用户明确批准按研究审查建议修改代码并在服务器再次实验。固定设计见[MECHANISM_VALIDATION.md](MECHANISM_VALIDATION.md)，独立身份`mechanism-factorial-audit-v1`，注册Main仍第48节。第46节数学损失、Frozen DINOv3、逐层L2、ASLS 2–6层候选、主256维、floor/cap、memory20000及cosine 1-NN不变；新分支数据角色与有限候选流程明确改变，不称等价提速或沿用旧独立验证。
+
+- 256正常图像重新分144fit/48selection/64audit，96扰动图像全部属于fit。ASLS及支持/权重重新拟合，不读旧ASLS/支持赢家；audit值仅表示冻结后读取。64图历史曾暴露，不能声称全新或患者隔离。
+- 学习支持、五Random及全维支持均从uniform开始，相同BB/Armijo最多800步做权重拟合。训练目标选两个不同支持作联合追踪，最后两个训练最优支持再共同refit，48图选择。主比较mechanism_sparse，uniform/Random weighted/全维weighted与β0完整固定，不能按test挑分支。β0仅指特征阶段，ASLS稳定性仍在。
+- 正常audit同时保留采样缓存对fit reference诊断及完整图像对独立audit memory诊断；audit memory排除全部64 query图像，最终异常evaluation memory仍沿官方normal train共享原协议。任何audit均不选参数。
+- 35表示/区组，来源seeds42/123/3407全六18组630行，旧6336/尾部108/岭180/pursuit180不可变保留。4锚点逐图精确与指标差<=1e-12，才引用历史控制；新ASLS的Raw为新同输入对照，历史Raw不伪装同协议。
+- 先CUDA/协议检查，再GPU0的正式Liver seed42严格工程门控；完成后自动GPU0–3执行剩余17组，Liver不重复，测试数值不改变设计。运行冻结代码/config/入口，不安装依赖、不抢占/重复，遵循47.1全项目存储和主动完整SHA回传，完整独立统计/镜像后停止该批监控。长期目标不得由正常loss/压缩/工程通过或研发方向均值判据标成功。
