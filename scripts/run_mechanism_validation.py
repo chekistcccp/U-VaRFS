@@ -16,6 +16,12 @@ def task_plan():
     tasks=[(42,d) for d in ['liver','brain','resc','xray','camelyon16','oct2017']]
     return tasks+[(s,d) for s in [123,3407] for d in ['xray','brain','liver','resc','camelyon16','oct2017']]
 
+def validate_run_root(project,source,root):
+    if (not source.is_relative_to((project/'results').resolve()) or
+        root.parent!=(project/'results/remote-experiments').resolve() or
+        not root.name.startswith('mechanism-validation-') or root.exists()):
+        raise ValueError('fresh project-local batch and frozen source required')
+
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
@@ -26,10 +32,7 @@ def main():
     p.add_argument('--control-dir',type=Path,required=True,help='external GPU scheduling locks only')
     a=p.parse_args();project=Path(__file__).resolve().parents[1]
     source=a.source_batch.resolve();root=a.run_root.resolve()
-    if (not source.is_relative_to((project/'results').resolve()) or
-        root.parent!=(project/'results/remote-experiments').resolve() or
-        not root.name.startswith('mechanism-validation-validation-') or root.exists()):
-        raise ValueError('fresh project-local batch and frozen source required')
+    validate_run_root(project,source,root)
     cache=a.cache_batch.resolve()
     if not cache.is_relative_to((project/'results').resolve()):raise ValueError('project-local cache batch required')
     cached=read(cache/'state.json')

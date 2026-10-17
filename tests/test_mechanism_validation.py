@@ -25,6 +25,20 @@ def test_first_liver_is_counted_once_before_remaining_all_six_three_seed_plan():
     assert set(tasks)=={(s,d) for s in [42,123,3407] for d in ['brain','liver','resc','oct2017','xray','camelyon16']}
     assert (42,'liver') not in tasks[1:5]+tasks[5:]
 
+def test_real_launcher_batch_prefix_is_accepted(tmp_path):
+    from scripts.run_mechanism_validation import validate_run_root
+    validate_run_root(tmp_path,tmp_path/'results/source',tmp_path/'results/remote-experiments/mechanism-validation-20261017T142627Z')
+
+@pytest.mark.parametrize('bad',['existing','wrong-prefix','outside-source','outside-output'])
+def test_scheduler_refuses_unsafe_or_duplicate_batch_roots(tmp_path,bad):
+    from scripts.run_mechanism_validation import validate_run_root
+    source=tmp_path/'results/source';root=tmp_path/'results/remote-experiments/mechanism-validation-safe'
+    if bad=='existing':root.mkdir(parents=True)
+    if bad=='wrong-prefix':root=root.with_name('other-batch')
+    if bad=='outside-source':source=tmp_path/'not-results/source'
+    if bad=='outside-output':root=tmp_path/'other/mechanism-validation-safe'
+    with pytest.raises(ValueError,match='fresh project-local'):validate_run_root(tmp_path,source,root)
+
 def source_fixture():
     g=torch.arange(192).repeat_interleave(16)
     return {'groups':g,'heldout_groups':torch.arange(192,256).repeat_interleave(16),
