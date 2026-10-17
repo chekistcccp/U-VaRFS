@@ -29,6 +29,19 @@ def test_real_launcher_batch_prefix_is_accepted(tmp_path):
     from scripts.run_mechanism_validation import validate_run_root
     validate_run_root(tmp_path,tmp_path/'results/source',tmp_path/'results/remote-experiments/mechanism-validation-20261017T142627Z')
 
+def test_all_frozen_entrypoints_exist_and_dispatch_modules_are_importable():
+    import importlib.util
+    from scripts.run_mechanism_validation import entrypoint_paths,WORKER_MODULE,ANALYZER_MODULE
+    project=Path(__file__).resolve().parents[1]
+    entries=entrypoint_paths(project)
+    assert len(entries)==4 and all(p.is_file() for p in entries.values())
+    assert Path(importlib.util.find_spec(WORKER_MODULE).origin)==entries['worker_sha256']
+    assert Path(importlib.util.find_spec(ANALYZER_MODULE).origin)==entries['analyzer_sha256']
+
+def test_missing_fixed_entrypoint_is_refused_before_run_creation(tmp_path):
+    from scripts.run_mechanism_validation import entrypoint_paths
+    with pytest.raises(ValueError,match='missing fixed experiment entrypoint'):entrypoint_paths(tmp_path)
+
 @pytest.mark.parametrize('bad',['existing','wrong-prefix','outside-source','outside-output'])
 def test_scheduler_refuses_unsafe_or_duplicate_batch_roots(tmp_path,bad):
     from scripts.run_mechanism_validation import validate_run_root

@@ -6,6 +6,17 @@ from pathlib import Path
 from scripts.evaluate_mechanism_validation import VERSION, atomic, read, sha256, strict_complete
 from uvarfs.protocol import code_fingerprint, BMAD_DATASETS
 
+WORKER_MODULE='scripts.evaluate_mechanism_validation'
+ANALYZER_MODULE='scripts.analyze_mechanism_validation'
+
+def entrypoint_paths(project):
+    modules={'worker_sha256':WORKER_MODULE,'fitter_sha256':'scripts.fit_mechanism_validation',
+             'scheduler_sha256':'scripts.run_mechanism_validation','analyzer_sha256':ANALYZER_MODULE}
+    paths={key:project.joinpath(*module.split('.')).with_suffix('.py') for key,module in modules.items()}
+    for path in paths.values():
+        if not path.is_file():raise ValueError('missing fixed experiment entrypoint: '+str(path))
+    return paths
+
 
 def utc():return time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime())
 
@@ -30,6 +41,7 @@ def main():
     p.add_argument('--cache-batch',type=Path,required=True)
     p.add_argument('--history-batch',type=Path,required=True)
     p.add_argument('--control-dir',type=Path,required=True,help='external GPU scheduling locks only')
+    p.add_argument('--preflight-only',action='store_true',help='validate sources/entrypoints/GPU availability without creating a run')
     a=p.parse_args();project=Path(__file__).resolve().parents[1]
     source=a.source_batch.resolve();root=a.run_root.resolve()
     validate_run_root(project,source,root)
@@ -52,6 +64,7 @@ def main():
     head=subprocess.check_output(['git','rev-parse','HEAD'],cwd=project,text=True).strip()
     if head!=a.expected_head or subprocess.check_output(['git','diff','--name-only','HEAD','--','uvarfs','scripts','configs'],cwd=project,text=True).strip():
         raise ValueError('approved clean source revision required')
+    entries=entrypoint_paths(project)
     import fcntl
     locks=[]
     for gpu in range(4):
@@ -65,6 +78,11 @@ def main():
         if any(ids.get(line.split(',')[0].strip())==gpu for line in apps.splitlines()):
             raise ValueError(f'physical GPU{gpu} occupied; do not preempt')
     for gpu in range(4):available(gpu)
+    if a.preflight_only:
+        print(json.dumps({'preflight_only':True,'head':head,'all_fixed_entrypoints_sha256':{k:sha256(v) for k,v in entries.items()},
+                          'allowed_gpus_free':[0,1,2,3],'source_cache_history_closed':True,'run_created':False}),flush=True)
+        for handle in locks:handle.close()
+        return
     root.mkdir();logroot=(project/'logs/remote-experiments'/root.name).resolve()
     reportroot=(project/'reports'/root.name).resolve()
     if not logroot.is_relative_to(project) or not reportroot.is_relative_to(project):raise ValueError('output escapes project')
@@ -72,8 +90,7 @@ def main():
     cfgpath=root/'fixed-mechanism.yaml';cfgpath.write_bytes((project/'configs/mechanism_validation.yaml').read_bytes())
     subprocess.run(['git','archive','--format=tar','--output',str(root/'frozen-evaluation-source.tar'),head],cwd=project,check=True)
     pinned={'head':head,'code_fingerprint':code_fingerprint(project),'config_sha256':sha256(cfgpath),
-        'worker_sha256':sha256(project/'scripts/evaluate_mechanism_validation.py'),
-        'fitter_sha256':sha256(project/'scripts/fit_mechanism_validation.py'),'scheduler_sha256':sha256(__file__),'analyzer_sha256':sha256(project/'scripts/analyze_mechanism_validation_validation.py')}
+            **{key:sha256(value) for key,value in entries.items()}}
     startup={**pinned,'evaluation_version':VERSION,'started_at_utc':utc(),'pid':os.getpid(),'start_ticks':ticks(os.getpid()),
         'physical_gpus':[0,1,2,3],'source_batch':str(source),'source_state_sha256':sha256(source/'state.json'),
         'cache_batch':str(cache),'cache_state_sha256':sha256(cache/'state.json'),'fit_seeds':[42,123,3407],'new_evaluations_per_block':35,'retained_controls_per_block':352,
@@ -91,11 +108,8 @@ def main():
     def pins():
         if (subprocess.check_output(['git','rev-parse','HEAD'],cwd=project,text=True).strip()!=head or
             code_fingerprint(project)!=pinned['code_fingerprint'] or sha256(cfgpath)!=pinned['config_sha256'] or
-            sha256(project/'scripts/evaluate_mechanism_validation.py')!=pinned['worker_sha256'] or
-            sha256(__file__)!=pinned['scheduler_sha256'] or
-            sha256(project/'scripts/fit_mechanism_validation.py')!=pinned['fitter_sha256'] or
+            any(sha256(value)!=pinned[key] for key,value in entries.items()) or
             sha256(cache/'state.json')!=startup['cache_state_sha256'] or
-            sha256(project/'scripts/analyze_mechanism_validation_validation.py')!=pinned['analyzer_sha256'] or
             sha256(source/'state.json')!=startup['source_state_sha256']):
             raise ValueError('frozen source/config/source-batch identity changed')
         if sha256(previous/'state.json')!=startup['history_state_sha256']:
@@ -106,7 +120,7 @@ def main():
         if log.exists() or exitfile.exists() or out.exists():raise ValueError('duplicate task refused: '+key)
         env=dict(os.environ,CUDA_VISIBLE_DEVICES=str(gpu),PYTHONPATH=str(project),
                  OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONUNBUFFERED='1')
-        argv=[sys.executable,'-u','-m','scripts.evaluate_mechanism_validation','--source',str(source/'results'/f'seed{seed}'/dataset),
+        argv=[sys.executable,'-u','-m',WORKER_MODULE,'--source',str(source/'results'/f'seed{seed}'/dataset),
               '--out',str(out),'--selector-config',str(cfgpath),'--cache-source',str(cache/'results'/f'seed{seed}'/dataset),'--history-source',str(previous/'results'/f'seed{seed}'/dataset)]
         t=time.monotonic()
         with log.open('xb') as f:
@@ -144,7 +158,7 @@ def main():
         if len(state['jobs'])!=18 or any(r['status']!='strict_complete' for r in state['jobs'].values()):
             raise ValueError('all 18 predefined blocks required')
         state['phase']='reporting';update()
-        subprocess.run([sys.executable,'-u','-m','scripts.analyze_mechanism_validation_validation','--batch',str(root),
+        subprocess.run([sys.executable,'-u','-m',ANALYZER_MODULE,'--batch',str(root),
                         '--out',str(reportroot/'final-analysis')],cwd=project,check=True)
         state['phase']='complete';state['finished_at_utc']=utc();update()
     except BaseException:
