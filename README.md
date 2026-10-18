@@ -1,4 +1,6 @@
-> **当前v22：同一正常匹配目标的互补稀疏支持搜索。** Frozen DINOv3 + ASLS + U-VaRFS主线、真实正常1-NN/完整分布/nuisance目标及256维预算保持；增加三个fit-only互补原始坐标起点和同目标数值精修。完整v21/v20/Gram及Raw/PCA/五Random控制保留，默认352方法。设计见[DIVERSE_MATCHING_SUPPORT.md](DIVERSE_MATCHING_SUPPORT.md)，真实性能须全六独立三fit验证。
+> **独立研究分支：正常关系稀疏选择。** 用户批准跨图可重复clean关系目标与实际nuisance，保留K256、Frozen DINOv3和cosine1NN；同目标Random权重、简单选择器、dense及β0公平对照。全六×三个来源fit/memory种子，不是新增独立患者。设计见[CLEAN_RELATION_SELECTION.md](CLEAN_RELATION_SELECTION.md)，性能须真实验证；注册Main仍v22，不自动按test更换。
+
+> **注册v22：同一正常匹配目标的互补稀疏支持搜索。** Frozen DINOv3 + ASLS + U-VaRFS主线、真实正常1-NN/完整分布/nuisance目标及256维预算保持；完整v21/v20/Gram及Raw/PCA/五Random控制保留，默认352方法。设计见[DIVERSE_MATCHING_SUPPORT.md](DIVERSE_MATCHING_SUPPORT.md)。
 
 > **Codex 接手先读 [AGENTS.md](AGENTS.md)**。固定 BMAD 全六、Frozen DINOv3 ViT-S+、ASLS + U-VaRFS、normal-only 和简单 cosine 1-NN。性能收益尚待真实六数据集验证，压缩、低正常 loss 与工程提速不能代替检测提升。代码/配置/测试/开发文档默认检查后提交推送；实验结果、日志、图表及分析报告保存在服务器及本机当前项目的`results/`、`reports/`、`logs/`中，由Git忽略，不默认提交或推送。
 

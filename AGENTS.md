@@ -1666,3 +1666,17 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 仅来源seed42诊断，不是三fit/新患者或检测成功证据。下一次求解策略/数学目标变化须依据完整诊断提出具体建议，不自动扩大支持搜索、放宽旧标准或按test选分支。
 
 本地完整源回归347项通过、17项CUDA因无本机runtime跳过；最终启动目录兼容调整后32项定向检查通过、3项CUDA跳过。覆盖独立方向导数/中心差分、精确并列反例、可行线段/只读保护、六组30端点全量数组与差商审计、禁止读取test CSV、来源篡改拒绝及nohup预建日志兼容。服务器实际CUDA/真实端点复现另验，不由本地通过推断停滞原因或检测收益。
+
+---
+
+# 56. 2026-10-19 用户批准正常关系稀疏选择重设计
+
+用户明确要求按研究复核建议修改代码、同步并在服务器再次研究。固定设计与第19节检查见[CLEAN_RELATION_SELECTION.md](CLEAN_RELATION_SELECTION.md)，独立身份`clean-relation-sparse-validation-v1`。本轮明确升级研究分支数学目标，不是第46节损失的等价提速；注册Main仍第48节，不按test自动升级。
+
+- 只用clean正常fit构造跨图、坐标重采样可靠邻居，以smooth多正关系概率loss加原.002实际paired nuisance选择K256原始坐标。β0不读扰动，图/温度/支持起点clean-only；没有异常合成或训练label/mask。Frozen DINOv3、逐层L2、normal memory20000、cosine1NN/Top1%及BMAD全六保持。
+- 固定已封闭机制批次ASLS和144fit/48selection/64audit/96nuisance/16patch，先解耦特征选择；三个来源fit/memory种子18配对区组，非新增独立正常抽样/患者。历史控制保留，不重开旧v20/v21/v22/尾部/岭/pursuit/机制/精度/端点批次。
+- 学习支持、五Random、Laplacian、clean repeatability及dense共同uniform初始化/同800步权重solver，支持搜索预算固定；全部训练池冻结后才用48图选解。主对象relation_sparse、同支持β0等解释控制不能择优代替主结论。41表示/组共738行，含13继承表示；8锚点逐图精确/适用指标<=1e-12和memory一致后引用旧机制控制。
+- 独立解析梯度与autograd/有限差分核验，真实目标下降和新固定图残差只属数值证据，不能证明异常收益。正常audit完整网格并排除全部64query的memory，不用于选参；旧精度门控不事后放宽。
+- 先Liver42完整工程门控，再GPU0–3剩余17组，冻结源码/config/入口/来源SHA、不装依赖/抢占/重复。第47.1节全部两端项目存储、封闭SHA回传、独立审计与报告/索引镜像后停止该批监控。性能未证实，不以正常loss/压缩/提速宣布长期研究成功。
+
+本地完整源回归364项通过、18项CUDA因无本机runtime跳过；最终57项定向回归通过、2项CUDA跳过。新增独立autograd/支持外方向差分、Laplacian标量oracle、同图边拒绝、无可靠关系/坏图拒绝、共同权重单调与约束、完整拟合序列化独立审计、候选/选择集与β0隔离、来源篡改和固定18组计划检查通过。真实四卡数值、Liver工程与检测收益分别在服务器验证，不由本地通过宣布成功。
