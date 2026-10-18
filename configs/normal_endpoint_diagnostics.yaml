@@ -1,0 +1,13 @@
+evaluation_version: normal-endpoint-diagnostics-v1
+source_seed: 42
+methods: [precision_sparse, precision_beta_zero, precision_random_weighted_seed42, precision_dense_weighted, precision_dense_beta_zero]
+step_fractions: [1.0, 0.01, 0.0001, 0.000001, 0.00000001, 0.0000000001, 0.000000000001]
+directions: [projected_gradient, steepest_feasible_pair, toward_parent, uniform_reference, fixed_coordinate_pair]
+fit_images: 144
+selection_images_used: 0
+audit_images_used: 0
+nuisance_images: 96
+patches_per_image: 16
+feature_budget: 256
+roundoff_multiplier: 64
+optimizer_or_detector_enabled: false
