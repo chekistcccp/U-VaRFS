@@ -1,0 +1,18 @@
+evaluation_version: fixed-support-precision-v1
+feature_budget: 256
+residual_tolerance: 1.0e-5
+maximum_iterations: 3000
+maximum_evaluations: 12000
+history_size: 12
+line_search_steps: 24
+armijo: 0.0001
+curvature_relative_floor: 1.0e-10
+normal_roles:
+  fit_images: 144
+  selection_images: 48
+  audit_images: 64
+  nuisance_images: 96
+  patches_per_image: 16
+source_weight_policy: continue_each_frozen_800_step_solution
+support_policy: all_parent_selected_and_random_and_dense_supports_fixed
+global_evaluation_gate: all_252_weighted_fits_pass_actual_projected_residual

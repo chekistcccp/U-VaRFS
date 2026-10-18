@@ -25,7 +25,7 @@ def normal_audit_methods(specs):
     return {name:spec for name,spec in specs.items() if name.startswith(('mechanism_','random_weighted_','random_uniform_','random_beta_zero_','dense_')) or name in {'asls_raw','asls_pca'}}
 
 @torch.inference_mode()
-def full_normal_audit(extractor,train,specs,cfg,audit_paths,out):
+def full_normal_audit(extractor,train,specs,cfg,audit_paths,out,*,methods_selector=None):
     """Actual full-grid scoring; all outer query images excluded from this memory."""
     if out.exists():raise ValueError('fresh normal audit output required')
     out.mkdir();paths=set(audit_paths)
@@ -33,7 +33,9 @@ def full_normal_audit(extractor,train,specs,cfg,audit_paths,out):
     lookup={str(s.image):s for s in train};queries=[lookup[p] for p in audit_paths]
     reference=[s for s in train if str(s.image) not in paths]
     if any(s.label!=0 or s.split!='train' for s in [*queries,*reference]):raise ValueError('official normal train only')
-    specs=normal_audit_methods(specs);set_seed(int(cfg['seed']))
+    specs=normal_audit_methods(specs) if methods_selector is None else methods_selector(specs)
+    if not specs or 'asls_raw' not in specs:raise ValueError('normal audit needs explicit representations and Raw teacher')
+    set_seed(int(cfg['seed']))
     memories=build_memories(extractor,reference,specs,cfg,out/'memory_progress.json')
     manifest=read(out/'memory_manifest.json')
     if paths & set(manifest['normal_train_paths']):raise ValueError('audit image present in audit memory')
