@@ -1680,3 +1680,19 @@ Main Macro Image AUROC=74.26%，低于 Fixed-4 Raw=78.12% 与同 K Random Raw me
 - 先Liver42完整工程门控，再GPU0–3剩余17组，冻结源码/config/入口/来源SHA、不装依赖/抢占/重复。第47.1节全部两端项目存储、封闭SHA回传、独立审计与报告/索引镜像后停止该批监控。性能未证实，不以正常loss/压缩/提速宣布长期研究成功。
 
 本地完整源回归364项通过、18项CUDA因无本机runtime跳过；最终57项定向回归通过、2项CUDA跳过。新增独立autograd/支持外方向差分、Laplacian标量oracle、同图边拒绝、无可靠关系/坏图拒绝、共同权重单调与约束、完整拟合序列化独立审计、候选/选择集与β0隔离、来源篡改和固定18组计划检查通过。真实四卡数值、Liver工程与检测收益分别在服务器验证，不由本地通过宣布成功。
+
+---
+
+# 57. 2026-10-19 正常关系固定支持精度与效能归因
+
+用户批准按最新复核修改代码、同步并继续服务器实验。先落实受控数值验证，完整定义见[RELATION_PRECISION_VALIDATION.md](RELATION_PRECISION_VALIDATION.md)，独立身份`clean-relation-fixed-support-precision-v1`；注册Main仍第48节，关系目标仍第56节，不自动改图、改loss或扩张支持搜索。
+
+- 复用封闭关系批次的ASLS、原坐标支持、clean图、温度、正常144fit/48selection/64audit、96nuisance×16patch、K256/floor/cap与memory20000/cosine1NN/Top1%。从各自父800步权重继续，图重建须两β父SHA/元数据完全一致；β0不读扰动，48/64特征不用于新选择。六集×来源fit/memory seeds42/123/3407是18配对延续区组，非新患者或新正常抽样。
+- 每组19权重：主/独立β0、同主支持β0、dense两β、五Random两β、Laplacian/repeatability两β，共342正常拟合。原始目标不变，精确mass=Kp换元、可行secant/投影梯度与实际Armijo；统一3000接受迭代/12000 solver实际loss-gradient调用、原p投影残差<=1e-5。额外父重现、uniform参考、最终独立gradient各一次，共至多12003调用；保存完整轨迹/成本/停止状态，不声称全局最优或检测收益。旧hardmax精度批次不追认通过。
+- 正式Liver42正常工程门控属于18组；科学精度未过不视作工程失败，继续四卡0–3其余17组。全部正常结果SHA冻结后一次全局门控，只有342/342达标才执行正常完整审计及新检测；否则终态precision_inconclusive、exit0，不读旧/新test表进行选择、不放宽阈值或跳过困难控制。若通过，每组19新权重+父主/父dense/Raw三锚点共22表示、396行；锚点逐图精确、适用指标<=1e-12、memory抽样一致才引用父738和旧机制630/6336/尾部108/岭180/pursuit180。64audit query完全排除audit memory。
+- 只读分析器独立重算342残差、父初值SHA/支持、真实loss单调、有限调用和全部成本。若检测发生，报告同输入Raw/PCA/精修五Random/简单选择/dense/β0/父支持uniform、全六图像与三mask定位、来源fit样本SD及2000次条件图像bootstrap；Random非Main重复、n3非患者、无像素地图重采样/多比较未校正/历史暴露与外部未复现限制全部明示。不按最优分支切主结论。
+- 新入口scripts.run_relation_precision，config/source/worker/solver/objective/scheduler/analyzer固定SHA。运行中不pull、不改源码或配置、不安装依赖、不抢占、不重复；保留原nohup.sh/服务器未提交文件及全部旧结果。全部实验产物实际两端当前项目results/logs/reports且Git忽略，仅认证与必要锁/调度控制外置。
+- 终态全部预定组严格完整、exit0和原wrapper/coordinator/worker身份退出后，封闭全量归档、主动取回、精确成员/安全路径/逐文件SHA、独立审计、双端报告/日志/历史索引闭环再暂停本批监控。预计窗口检查，不频繁轮询；研究目标未成立不标成功，不自动启动下一轮。若结果仍不支持收益，先审查关系/匹配依据，不能无限追加测试驱动调参。
+- 第19节：研究问题、ASLS、关系数学目标、无异常标签约束、detector和数据/K预算不变；固定支持数值算法与计算上限改变已获本次授权，新evaluation_version和独立目录，不改默认EXPERIMENT_VERSION或旧科学源码。代码、配置、测试与开发文档按默认设置检查后提交同步；真实性能仍须新实验验证。
+
+本轮61项定向CPU回归通过、4项真实CUDA检查因本机无runtime跳过；含光滑关系mass有限差分、父支持/权重冻结、两β图重现、独立残差/成本/轨迹篡改拒绝、342正常全局门控不读test、396条件评价及738父控制完整分析。归档助手两合法终态和8类拒绝共10检查通过。Python语法与diff检查通过；服务器四卡可用性、CUDA与正式工程须实际验证，不由本地检查代替性能证据。
