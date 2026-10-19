@@ -673,3 +673,5 @@ python -m scripts.analyze_local_results --results results/gpu-eval-v22-diverse-m
 四卡按独立种子/数据集调度，每个`--dataset-worker`只写自己的数据集目录；全六严格完成后唯一协调者使用`python -m scripts.merge_dataset_workers --seed SEED`发布汇总。SSH连接与调度控制单独保存，实验产物按AGENTS第47节归入项目内的Git忽略目录，禁止并发任务覆盖global CSV。运行预算以实测更新，启动身份核验后在预计窗口检查，不频繁轮询。
 
 2026-10-19新增独立[正常关系固定支持精度验证](RELATION_PRECISION_VALIDATION.md)：冻结第56节关系目标/图/支持，19项共同有限精修×18区组，共342正常拟合；全局精度通过才进行396项检测，否则完整报告precision_inconclusive。入口`python -m scripts.run_relation_precision`，配置`configs/relation_precision.yaml`，分析器`scripts.analyze_relation_precision`。注册Main与所有历史控制保持，结果/日志/报告在两端当前项目内并Git忽略。
+
+投影大动态范围的等价数值处理见[PROJECTION_STABILITY.md](PROJECTION_STABILITY.md)及AGENTS第58节；不改变研究目标或科学验收，不把旧失败批次追认为成功。

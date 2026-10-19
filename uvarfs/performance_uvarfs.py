@@ -31,7 +31,29 @@ def project_bounded_simplex(values, floor_mass=1e-4, cap_factor=4.):
     mass=(torch.cat([free.new_zeros(1),free[:-1]])*widths).cumsum(0)
     next_mass=torch.cat([mass[1:],mass[-1:]])
     valid=(free>0)&(mass<=target+1e-12)&(next_mass>=target-1e-12)
-    interval=torch.where(valid)[0][0]
+    intervals=torch.where(valid)[0]
+    if not len(intervals) or float(v.abs().max())*torch.finfo(v.dtype).eps>1e-12:
+        # A large finite secant proposal can merge the two breakpoints of a
+        # coordinate (spacing > capacity), or corrupt a seemingly valid root.
+        # Preserve the legacy fast path for well-scaled inputs above.
+        # For q=p-lower in [0,capacity], let r=ceil(target/capacity) and z_r be
+        # the r-th largest input. A root lies in [z_r-capacity,z_r]: at its
+        # endpoints at least r coordinates are capped / at most r-1 are positive.
+        # Centering at z_r and clipping to +/-capacity therefore leaves the
+        # exact Euclidean projection unchanged, while bounding breakpoint scale.
+        rank=min(len(v),max(1,int(np.ceil(target/capacity))))
+        pivot=values.double().sort(descending=True,stable=True).values[rank-1]
+        shifted=(values.double()-pivot).clamp(-capacity,capacity)
+        breaks=torch.cat([shifted,shifted-capacity])
+        order=breaks.argsort(descending=True,stable=True);breaks=breaks[order]
+        free=signs[order].cumsum(0)
+        widths=torch.cat([breaks.new_zeros(1),breaks[:-1]-breaks[1:]])
+        mass=(torch.cat([free.new_zeros(1),free[:-1]])*widths).cumsum(0)
+        next_mass=torch.cat([mass[1:],mass[-1:]])
+        valid=(free>0)&(mass<=target+1e-12)&(next_mass>=target-1e-12)
+        intervals=torch.where(valid)[0]
+        if not len(intervals):raise ArithmeticError('stable capped-simplex root not bracketed')
+    interval=intervals[0]
     threshold=breaks[interval]-(target-mass[interval])/free[interval]
     return ((shifted-threshold).clamp(0,capacity)+lower).to(values.dtype)
 
